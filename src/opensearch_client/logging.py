@@ -19,11 +19,11 @@ what a log handler needs on top of it:
 
 import copy
 import logging
-from threading import Lock, Timer
+from datetime import datetime, timezone
+from threading import Lock, Timer, local
 from typing import Any, Dict, List
 
 from osclient.client import OpensearchClient
-from osclient.transport import Transport
 
 
 class OpensearchHandler(logging.Handler):
@@ -37,8 +37,8 @@ class OpensearchHandler(logging.Handler):
 
     def __init__(
         self,
+        client: OpensearchClient,
         index: str,
-        transport: Transport,
         *,
         level: int = logging.NOTSET,
         buffer_size: int = 1000,
@@ -57,7 +57,7 @@ class OpensearchHandler(logging.Handler):
             max_queue (int): the most records held in memory; beyond this the
                 oldest are dropped and counted in ``dropped``.
             extra_fields (dict[str, Any] | None): fields added to every
-                document, e.g. ``{"service": {"name": "superset-collector"}}``.
+                document, e.g. ``{"service": {"name": "my-service"}}``.
         """
         logging.Handler.__init__(self)
 
@@ -70,49 +70,70 @@ class OpensearchHandler(logging.Handler):
             extra_fields = {}
         self.extra_fields = copy.deepcopy(extra_fields.copy())
 
-        self._client = OpensearchClient(transport=transport, default_index=index)
-        self._ensure_index(index)
+        self._client = client
+        self._index_ready = False
 
         self._buffer: List[Dict[str, Any]] = []
+        self._dropped = 0
+        # Per thread, so records logged on another thread are still shipped.
+        self._local = local()
 
     @property
     def dropped(self) -> int:
         """The number of records discarded so far (queue overflow or send failure)."""
-        raise NotImplementedError
+        return self._dropped
 
     def emit(self, record: logging.LogRecord) -> None:
         """Queue one record for shipping; never block and never raise.
 
-        Records from the libraries the handler itself uses to send (``requests``,
-        ``urllib3``, ``osclient``) are ignored, so shipping a batch cannot
+        Records logged while this handler is itself sending (for example by the
+        transport or ``requests``) are ignored, so shipping a batch cannot
         generate new records that get shipped in turn.
 
         Args:
             record (logging.LogRecord): the record to ship.
         """
-        self.format(record)
-        doc = self._to_document(record)
+        if getattr(self._local, "sending", False):
+            return
+        try:
+            self.format(record)
+            doc = self._to_document(record)
 
-        # Add record to buffer
-        self._buffer.append(doc)
-        if len(self._buffer) >= self.buffer_size:
-            self.flush()
+            # Add record to buffer
+            self._buffer.append(doc)
+            if len(self._buffer) >= self.buffer_size:
+                self.flush()
+        except Exception:
+            self.handleError(record)
 
     def flush(self) -> None:
-        """Send everything currently queued, and wait until the send finishes."""
-        if self._buffer:
-                logs_buffer = self._buffer
-                self._buffer = []
-                
-                self._client.bulk(logs_buffer, self.index)
+        """Send everything currently queued, and wait until the send finishes.
 
+        Documents the cluster rejects are added to ``dropped``.
+        """
+        if not self._buffer:
+            return
+
+        logs_buffer = self._buffer
+        self._buffer = []
+
+        self._local.sending = True
+        try:
+            if not self._index_ready:
+                self._index_ready = self._ensure_index(self.index)
+            result = self._client.bulk(logs_buffer, self.index)
+        finally:
+            self._local.sending = False
+        if not result:
+            failed = result.data["failed"] if result.data else len(logs_buffer)
+            self._dropped += failed
 
     def close(self) -> None:
         """Stop the background thread after a final flush, then close the handler."""
         self.flush()
 
     def _to_document(self, record: logging.LogRecord) -> Dict[str, Any]:
-        """Convert a log record into an ECS-style document.
+        """Convert a log record into a document.
 
         Covers the timestamp, level, logger name, message, exception details when
         present, the host name, the program name, any ``extra=`` fields on the
@@ -124,7 +145,16 @@ class OpensearchHandler(logging.Handler):
         Returns:
             dict[str, Any]: the document to index.
         """
-        return record.__dict__
+        timestamp = datetime.fromtimestamp(record.created, timezone.utc)
+        doc: dict[str, Any] = {
+            "@timestamp": timestamp.isoformat(),
+            "message": record.getMessage(),
+            "levelname": record.levelname,
+            "name": record.name,
+        }
+        if record.exc_text:
+            doc["exc_text"] = record.exc_text
+        return doc
 
     def _index_for(self, record: logging.LogRecord) -> str:
         """Return the index a record belongs in (the base name, plus a date if used).
@@ -137,7 +167,7 @@ class OpensearchHandler(logging.Handler):
         """
         raise NotImplementedError
 
-    def _ensure_index(self, index: str) -> None:
+    def _ensure_index(self, index: str) -> bool:
         """Create the index if it does not exist yet.
 
         Args:
@@ -146,7 +176,12 @@ class OpensearchHandler(logging.Handler):
         Returns:
             bool: True if the index exists or was created, False on failure.
         """
-        self._client.create_index({}, index)
+        exists = self._client.index_exists(index)
+        if not exists:
+            return False
+        if exists.data:
+            return True
+        return bool(self._client.create_index({}, index))
 
     def _send(self, documents: list[tuple[str, dict[str, Any]]]) -> None:
         """Index ``(index, document)`` pairs with ``OpensearchClient.bulk``.

@@ -15,7 +15,6 @@ import uuid
 
 import pytest
 
-from osclient import DirectTransport
 from osclient.config import client_from_env
 from osclient.logging import OpensearchHandler
 
@@ -35,14 +34,9 @@ def test_handler_indexes_records_at_or_above_its_level() -> None:
     """Records reach the index with their message formatted; lower levels do not."""
     client = client_from_env()
     assert client is not None, "OPENSEARCH_* is set but client_from_env returned None"
-    transport = DirectTransport(
-        os.environ["OPENSEARCH_URL"],
-        (os.environ["OPENSEARCH_USER"], os.environ["OPENSEARCH_PASSWORD"]),
-        verify=True,
-    )
 
     index = f"osclient-logs-{uuid.uuid4().hex[:8]}"
-    handler = OpensearchHandler(index, transport, level=logging.INFO)
+    handler = OpensearchHandler(client, index, level=logging.INFO)
     # A logger of its own that does not propagate, so only this handler sees the
     # records and nothing else in the process can feed into the index.
     logger = logging.getLogger(f"osclient-test-{index}")
@@ -53,7 +47,7 @@ def test_handler_indexes_records_at_or_above_its_level() -> None:
     try:
         logger.debug("below the handler level")
         logger.info("collector started")
-        logger.warning("fetched %d records from %s", 3, "superset")
+        logger.warning("fetched %d records from %s", 3, "source")
         handler.flush()
 
         assert client.refresh(index)
@@ -61,7 +55,7 @@ def test_handler_indexes_records_at_or_above_its_level() -> None:
         assert search
         assert sorted(doc["message"] for doc in search.data) == [
             "collector started",
-            "fetched 3 records from superset",
+            "fetched 3 records from source",
         ]
     finally:
         logger.removeHandler(handler)
