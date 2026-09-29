@@ -1,16 +1,21 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.logging.OpensearchHandler."""
+"""Unit tests for opensearch_client.log_handler.OpensearchHandler."""
 
+import json
 import logging
+import sys
+import threading
 from typing import Any
 
-import pytest
+from opensearch_client.client import OpensearchClient
+from opensearch_client.log_handler import OpensearchHandler
+from opensearch_client.result import Failure, OpensearchResult, Success
 
-from osclient.client import OpensearchClient
-from osclient.logging import OpensearchHandler
-from osclient.result import Failure, OpensearchResult, Success
+# How long the tests wait on another thread before deciding it is stuck. Only
+# reached when the code under test is broken.
+_WAIT_SECONDS = 5
 
 
 class FakeTransport:
@@ -79,12 +84,87 @@ class MissingIndexTransport:
         return Success({"items": []})
 
 
+def _parse_bulk_documents(body: bytes | None) -> list[dict[str, Any]]:
+    """Return the documents in a bulk body, skipping each document's action line."""
+    lines = (body or b"").decode().splitlines()
+    documents = []
+    for position in range(1, len(lines), 2):
+        documents.append(json.loads(lines[position]))
+    return documents
+
+
+class RecordingTransport:
+    """Keeps every document sent in a bulk request."""
+
+    def __init__(self) -> None:
+        self.documents: list[dict[str, Any]] = []
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
+        if path == "_bulk":
+            self.documents.extend(_parse_bulk_documents(body))
+        return Success({"items": []})
+
+
+class BlockingTransport:
+    """Holds the first bulk request open until the test releases it."""
+
+    def __init__(self) -> None:
+        self.send_started = threading.Event()
+        self.release_send = threading.Event()
+        self.is_first_send = True
+        self.messages: list[str] = []
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
+        if path == "_bulk":
+            if self.is_first_send:
+                self.is_first_send = False
+                self.send_started.set()
+                # Outlasts the test's own wait, so a broken handler cannot hang it.
+                if not self.release_send.wait(_WAIT_SECONDS * 2):
+                    raise RuntimeError("the send was never released")
+            for document in _parse_bulk_documents(body):
+                self.messages.append(document["message"])
+        return Success({"items": []})
+
+
+class ErrorRecordingHandler(OpensearchHandler):
+    """Keeps the records passed to handleError instead of printing a traceback."""
+
+    def __init__(self, client: OpensearchClient, index: str, **kwargs: Any) -> None:
+        super().__init__(client, index, **kwargs)
+        self.errored_records: list[logging.LogRecord] = []
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        self.errored_records.append(record)
+
+
 def _handler(transport: Any, **kwargs: Any) -> OpensearchHandler:
     return OpensearchHandler(OpensearchClient(transport), "logs", **kwargs)
 
 
 def _record(message: str) -> logging.LogRecord:
     return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
+
+
+def _emit_then_signal(
+    handler: OpensearchHandler, record: logging.LogRecord, emitted: threading.Event
+) -> None:
+    handler.emit(record)
+    emitted.set()
 
 
 def test_index_is_created_on_first_flush_only() -> None:
@@ -123,7 +203,7 @@ def test_records_logged_while_sending_are_not_shipped() -> None:
     assert b"chatter" not in transport.bulk_bodies[0]
 
 
-def test_rejected_documents_are_counted_as_dropped() -> None:
+def test_failed_send_is_counted_as_dropped() -> None:
     """A failed send does not raise; the lost records show up in ``dropped``."""
     handler = _handler(FakeTransport(Failure("down", status=500)))
 
@@ -134,14 +214,64 @@ def test_rejected_documents_are_counted_as_dropped() -> None:
     assert handler.dropped == 2
 
 
-def test_emit_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_emit_never_raises() -> None:
     """An error while shipping goes to ``handleError``, not to the caller."""
-    handler = _handler(
-        FakeTransport(Success({}), error=RuntimeError("boom")), buffer_size=1
+    handler = ErrorRecordingHandler(
+        OpensearchClient(FakeTransport(Success({}), error=RuntimeError("boom"))),
+        "logs",
+        buffer_size=1,
     )
-    handled: list[logging.LogRecord] = []
-    monkeypatch.setattr(handler, "handleError", handled.append)
 
     handler.emit(_record("one"))
 
-    assert len(handled) == 1
+    assert len(handler.errored_records) == 1
+
+
+def test_slow_send_neither_blocks_other_threads_nor_loses_records() -> None:
+    """Records emitted during a send are not blocked, and arrive in the next flush."""
+    transport = BlockingTransport()
+    handler = _handler(transport, buffer_size=2)
+    handler.emit(_record("a"))
+    # Emitting "b" fills the buffer, so this thread's flush blocks inside the send.
+    first_sender = threading.Thread(target=handler.emit, args=(_record("b"),))
+    first_sender.start()
+    assert transport.send_started.wait(_WAIT_SECONDS), "the send never started"
+
+    emitted = threading.Event()
+    other_sender = threading.Thread(
+        target=_emit_then_signal, args=(handler, _record("c"), emitted)
+    )
+    other_sender.start()
+    emit_returned = emitted.wait(_WAIT_SECONDS)
+    transport.release_send.set()
+    first_sender.join()
+    other_sender.join()
+    handler.flush()
+
+    assert emit_returned, "emit blocked while another thread was sending"
+    assert transport.messages == ["a", "b", "c"]
+
+
+def test_args_and_exceptions_become_plain_json_documents() -> None:
+    """Formatted args and exception text are indexed; raw args and exc_info are not."""
+    transport = RecordingTransport()
+    handler = _handler(transport, buffer_size=1)
+    try:
+        raise ValueError("bad value")
+    except ValueError:
+        exc_info = sys.exc_info()
+    record = logging.LogRecord(
+        "test", logging.ERROR, __file__, 1, "got %s and %d", ("text", 3), exc_info
+    )
+
+    handler.emit(record)
+
+    assert handler.dropped == 0
+    assert len(transport.documents) == 1
+    document = transport.documents[0]
+    assert document["message"] == "got text and 3"
+    assert document["levelname"] == "ERROR"
+    assert document["name"] == "test"
+    assert "ValueError: bad value" in document["exc_text"]
+    assert "args" not in document
+    assert "exc_info" not in document

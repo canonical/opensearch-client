@@ -5,7 +5,7 @@
 
 The handler is a standard :class:`logging.Handler`: attach it to a logger and
 every record that reaches it is indexed into OpenSearch through an
-:class:`~osclient.client.OpensearchClient`. Batching, retries and transport
+:class:`~opensearch_client.client.OpensearchClient`. Batching, retries and transport
 selection are delegated to :meth:`OpensearchClient.bulk`; this module only adds
 what a log handler needs on top of it:
 
@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from threading import Lock, Timer, local
 from typing import Any, Dict, List
 
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 
 class OpensearchHandler(logging.Handler):
@@ -73,6 +73,9 @@ class OpensearchHandler(logging.Handler):
         self._client = client
         self._index_ready = False
 
+        # Guards _buffer, _dropped and _index_ready. Held only for quick updates,
+        # never while sending, so a slow send does not block other threads' logging.
+        self._lock = Lock()
         self._buffer: List[Dict[str, Any]] = []
         self._dropped = 0
         # Per thread, so records logged on another thread are still shipped.
@@ -100,8 +103,10 @@ class OpensearchHandler(logging.Handler):
             doc = self._to_document(record)
 
             # Add record to buffer
-            self._buffer.append(doc)
-            if len(self._buffer) >= self.buffer_size:
+            with self._lock:
+                self._buffer.append(doc)
+                full = len(self._buffer) >= self.buffer_size
+            if full:
                 self.flush()
         except Exception:
             self.handleError(record)
@@ -111,22 +116,25 @@ class OpensearchHandler(logging.Handler):
 
         Documents the cluster rejects are added to ``dropped``.
         """
-        if not self._buffer:
-            return
-
-        logs_buffer = self._buffer
-        self._buffer = []
+        with self._lock:
+            if not self._buffer:
+                return
+            logs_buffer = self._buffer
+            self._buffer = []
+            index_ready = self._index_ready
 
         self._local.sending = True
         try:
-            if not self._index_ready:
-                self._index_ready = self._ensure_index(self.index)
+            if not index_ready and self._ensure_index(self.index):
+                with self._lock:
+                    self._index_ready = True
             result = self._client.bulk(logs_buffer, self.index)
         finally:
             self._local.sending = False
         if not result:
             failed = result.data["failed"] if result.data else len(logs_buffer)
-            self._dropped += failed
+            with self._lock:
+                self._dropped += failed
 
     def close(self) -> None:
         """Stop the background thread after a final flush, then close the handler."""

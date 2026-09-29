@@ -1,10 +1,10 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Functional tests for osclient.logging against a live OpenSearch cluster.
+"""Functional tests for opensearch_client.log_handler against a live OpenSearch cluster.
 
 These need the same ``OPENSEARCH_URL`` / ``OPENSEARCH_USER`` /
-``OPENSEARCH_PASSWORD`` variables as ``test_osclient.py`` and are skipped when any
+``OPENSEARCH_PASSWORD`` variables as ``test_opensearch_client.py`` and are skipped when any
 is unset. ``tests/functional/run.sh`` starts an ephemeral Docker cluster, sets
 them, runs these tests, and tears everything down.
 """
@@ -15,8 +15,8 @@ import uuid
 
 import pytest
 
-from osclient.config import client_from_env
-from osclient.logging import OpensearchHandler
+from opensearch_client.config import client_from_env
+from opensearch_client.log_handler import OpensearchHandler
 
 if not (
     os.environ.get("OPENSEARCH_URL")
@@ -35,11 +35,11 @@ def test_handler_indexes_records_at_or_above_its_level() -> None:
     client = client_from_env()
     assert client is not None, "OPENSEARCH_* is set but client_from_env returned None"
 
-    index = f"osclient-logs-{uuid.uuid4().hex[:8]}"
+    index = f"opensearch_client-logs-{uuid.uuid4().hex[:8]}"
     handler = OpensearchHandler(client, index, level=logging.INFO)
     # A logger of its own that does not propagate, so only this handler sees the
     # records and nothing else in the process can feed into the index.
-    logger = logging.getLogger(f"osclient-test-{index}")
+    logger = logging.getLogger(f"opensearch_client-test-{index}")
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler)
