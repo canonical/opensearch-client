@@ -17,10 +17,13 @@ what a log handler needs on top of it:
   never feeds back into the handler itself.
 """
 
+import copy
 import logging
-from typing import Any
+from threading import Lock, Timer
+from typing import Any, Dict, List
 
 from osclient.client import OpensearchClient
+from osclient.transport import Transport
 
 
 class OpensearchHandler(logging.Handler):
@@ -34,13 +37,13 @@ class OpensearchHandler(logging.Handler):
 
     def __init__(
         self,
-        client: OpensearchClient,
         index: str,
+        transport: Transport,
         *,
         level: int = logging.NOTSET,
         buffer_size: int = 1000,
         flush_interval: float = 5.0,
-        max_queue: int = 10_000,
+        max_queue: int = 10000,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
         """Create the handler and start its background flush thread.
@@ -56,7 +59,21 @@ class OpensearchHandler(logging.Handler):
             extra_fields (dict[str, Any] | None): fields added to every
                 document, e.g. ``{"service": {"name": "superset-collector"}}``.
         """
-        raise NotImplementedError
+        logging.Handler.__init__(self)
+
+        self.buffer_size = buffer_size
+        self.flush_interval = flush_interval
+        self.index = index
+        self.level = level
+        self.max_queue = max_queue
+        if extra_fields is None:
+            extra_fields = {}
+        self.extra_fields = copy.deepcopy(extra_fields.copy())
+
+        self._client = OpensearchClient(transport=transport, default_index=index)
+        self._ensure_index(index)
+
+        self._buffer: List[Dict[str, Any]] = []
 
     @property
     def dropped(self) -> int:
@@ -73,17 +90,28 @@ class OpensearchHandler(logging.Handler):
         Args:
             record (logging.LogRecord): the record to ship.
         """
-        raise NotImplementedError
+        self.format(record)
+        doc = self._to_document(record)
+
+        # Add record to buffer
+        self._buffer.append(doc)
+        if len(self._buffer) >= self.buffer_size:
+            self.flush()
 
     def flush(self) -> None:
         """Send everything currently queued, and wait until the send finishes."""
-        raise NotImplementedError
+        if self._buffer:
+                logs_buffer = self._buffer
+                self._buffer = []
+                
+                self._client.bulk(logs_buffer, self.index)
+
 
     def close(self) -> None:
         """Stop the background thread after a final flush, then close the handler."""
-        raise NotImplementedError
+        self.flush()
 
-    def _to_document(self, record: logging.LogRecord) -> dict[str, Any]:
+    def _to_document(self, record: logging.LogRecord) -> Dict[str, Any]:
         """Convert a log record into an ECS-style document.
 
         Covers the timestamp, level, logger name, message, exception details when
@@ -96,7 +124,7 @@ class OpensearchHandler(logging.Handler):
         Returns:
             dict[str, Any]: the document to index.
         """
-        raise NotImplementedError
+        return record.__dict__
 
     def _index_for(self, record: logging.LogRecord) -> str:
         """Return the index a record belongs in (the base name, plus a date if used).
@@ -109,8 +137,8 @@ class OpensearchHandler(logging.Handler):
         """
         raise NotImplementedError
 
-    def _ensure_index(self, index: str) -> bool:
-        """Create the index if it does not exist yet (checked once per index).
+    def _ensure_index(self, index: str) -> None:
+        """Create the index if it does not exist yet.
 
         Args:
             index (str): the index to check or create.
@@ -118,7 +146,7 @@ class OpensearchHandler(logging.Handler):
         Returns:
             bool: True if the index exists or was created, False on failure.
         """
-        raise NotImplementedError
+        self._client.create_index({}, index)
 
     def _send(self, documents: list[tuple[str, dict[str, Any]]]) -> None:
         """Index ``(index, document)`` pairs with ``OpensearchClient.bulk``.
