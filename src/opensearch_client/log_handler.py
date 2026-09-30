@@ -21,22 +21,30 @@ import copy
 import logging
 import traceback
 from datetime import datetime, timezone
-from threading import Event, Lock, Thread, local
+from threading import Event, Lock, Thread, current_thread
 from typing import Any, Dict, List
 
 from opensearch_client.client import OpensearchClient
 
-# How long close() waits for an in-progress send before flushing the rest itself.
+# How long flush() waits for the flush thread to finish a send. Bounded so that
+# logging.shutdown cannot hang when OpenSearch is unreachable.
+_FLUSH_WAIT_SECONDS = 10.0
+
+# How long close() waits for the flush thread to finish its final send.
 _CLOSE_JOIN_SECONDS = 5.0
 
 
 class OpensearchHandler(logging.Handler):
     """Ship log records to an OpenSearch index.
 
-    ``emit`` queues a record and sends the queue with ``OpensearchClient.bulk``
-    once ``buffer_size`` records are waiting. A background thread also sends the
-    queue every ``flush_interval`` seconds, so records from a quiet process are
-    not held indefinitely. Records the cluster rejects are counted in ``dropped``.
+    ``emit`` only queues a record. A background thread sends the queue with
+    ``OpensearchClient.bulk`` every ``flush_interval`` seconds, or as soon as
+    ``buffer_size`` records are waiting, so ``emit`` never blocks on the network.
+    If more than ``max_queue`` records are waiting, the oldest are dropped. Dropped
+    and rejected records are counted in ``dropped``.
+
+    Records logged by the flush thread itself, such as what ``requests`` logs
+    while sending, are ignored so that sending cannot create records to send.
     """
 
     def __init__(
@@ -77,18 +85,21 @@ class OpensearchHandler(logging.Handler):
         self._client = client
         self._index_ready = False
 
-        # Guards _buffer, _dropped and _index_ready. Held only for quick updates,
+        # Guards _buffer, _dropped and _flush_waiters. Held only for quick updates,
         # never while sending, so a slow send does not block other threads' logging.
         self._lock = Lock()
         self._buffer: List[Dict[str, Any]] = []
         self._dropped = 0
-        # Per thread, so records logged on another thread are still shipped.
-        self._local = local()
+        self._flush_waiters: List[Event] = []
 
+        self._wake_event = Event()
         self._stop_event = Event()
         self._flush_thread = Thread(
             target=self._run, name="osclient-log-flush", daemon=True
         )
+        # Runs before handle() takes the handler lock, so the flush thread's own
+        # records can never wait on a thread that is waiting for the flush thread.
+        self.addFilter(self._is_not_from_flush_thread)
         self._flush_thread.start()
 
     @property
@@ -97,60 +108,47 @@ class OpensearchHandler(logging.Handler):
         return self._dropped
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Queue one record for shipping; never block and never raise.
-
-        Records logged while this handler is itself sending (for example by the
-        transport or ``requests``) are ignored, so shipping a batch cannot
-        generate new records that get shipped in turn.
+        """Queue one record for the flush thread; never block and never raise.
 
         Args:
             record (logging.LogRecord): the record to ship.
         """
-        if getattr(self._local, "sending", False):
-            return
         try:
             self.format(record)
             doc = self._to_document(record)
 
-            # Add record to buffer
             with self._lock:
                 self._buffer.append(doc)
+                if len(self._buffer) > self.max_queue:
+                    del self._buffer[0]
+                    self._dropped += 1
                 full = len(self._buffer) >= self.buffer_size
             if full:
-                self.flush()
+                self._wake_event.set()
         except Exception:
             self.handleError(record)
 
     def flush(self) -> None:
-        """Send everything currently queued, and wait until the send finishes.
+        """Ask the flush thread to send the queue, and wait for it to finish.
 
-        Documents the cluster rejects are added to ``dropped``.
+        Waits at most 10 seconds, and returns at once if the handler is closed.
         """
+        if not self._flush_thread.is_alive():
+            return
+        done = Event()
         with self._lock:
-            if not self._buffer:
-                return
-            logs_buffer = self._buffer
-            self._buffer = []
-            index_ready = self._index_ready
-
-        self._local.sending = True
-        try:
-            if not index_ready and self._ensure_index(self.index):
-                with self._lock:
-                    self._index_ready = True
-            result = self._client.bulk(logs_buffer, self.index)
-        finally:
-            self._local.sending = False
-        if not result:
-            failed = result.data["failed"] if result.data else len(logs_buffer)
-            with self._lock:
-                self._dropped += failed
+            self._flush_waiters.append(done)
+        self._wake_event.set()
+        done.wait(_FLUSH_WAIT_SECONDS)
 
     def close(self) -> None:
-        """Stop the background thread, send what is still queued, then close."""
+        """Stop the flush thread after its final send, then close the handler.
+
+        Waits at most 5 seconds for that final send.
+        """
         self._stop_event.set()
+        self._wake_event.set()
         self._flush_thread.join(_CLOSE_JOIN_SECONDS)
-        self._flush_and_report_errors()
         super().close()
 
     def _to_document(self, record: logging.LogRecord) -> Dict[str, Any]:
@@ -217,21 +215,55 @@ class OpensearchHandler(logging.Handler):
         raise NotImplementedError
 
     def _run(self) -> None:
-        """Flush every ``flush_interval`` seconds until ``close`` is called.
+        """Send the queue on the flush thread until ``close`` is called.
 
-        A failed flush never ends the loop.
+        Sends every ``flush_interval`` seconds, when woken by a full buffer, and
+        when ``flush`` asks. A failed send never ends the loop. After ``close``
+        the loop makes one last send and exits.
         """
-        while not self._stop_event.wait(self.flush_interval):
-            self._flush_and_report_errors()
+        while True:
+            self._wake_event.wait(self.flush_interval)
+            self._wake_event.clear()
+            stopping = self._stop_event.is_set()
+            with self._lock:
+                waiters = self._flush_waiters
+                self._flush_waiters = []
+            try:
+                self._send_buffered()
+            except Exception:
+                # Reported like handleError does, as there is no record to hand it.
+                if logging.raiseExceptions:
+                    traceback.print_exc()
+            for waiter in waiters:
+                waiter.set()
+            if stopping:
+                break
 
-    def _flush_and_report_errors(self) -> None:
-        """Flush, reporting any error to stderr as ``handleError`` does.
+    def _send_buffered(self) -> None:
+        """Send everything queued with ``OpensearchClient.bulk``, if anything is.
 
-        Used where there is no record to hand to ``handleError`` and the caller
-        must not see an exception: the background thread and ``close``.
+        Runs only on the flush thread. Records lost to a failed send or an
+        exception are added to ``dropped``.
         """
+        with self._lock:
+            if not self._buffer:
+                return
+            documents = self._buffer
+            self._buffer = []
+
         try:
-            self.flush()
+            if not self._index_ready:
+                self._index_ready = self._ensure_index(self.index)
+            result = self._client.bulk(documents, self.index)
         except Exception:
-            if logging.raiseExceptions:
-                traceback.print_exc()
+            with self._lock:
+                self._dropped += len(documents)
+            raise
+        if not result:
+            failed = result.data["failed"] if result.data else len(documents)
+            with self._lock:
+                self._dropped += failed
+
+    def _is_not_from_flush_thread(self, record: logging.LogRecord) -> bool:
+        """Filter out records created on the flush thread."""
+        return current_thread() is not self._flush_thread
