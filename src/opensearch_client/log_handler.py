@@ -33,6 +33,9 @@ _FLUSH_WAIT_SECONDS = 10.0
 # How long close() waits for the flush thread to finish its final send.
 _CLOSE_JOIN_SECONDS = 5.0
 
+# How many more times bulk() sends documents that failed to index.
+_SEND_RETRIES = 2
+
 
 class OpensearchHandler(logging.Handler):
     """Ship log records to an OpenSearch index.
@@ -40,8 +43,11 @@ class OpensearchHandler(logging.Handler):
     ``emit`` only queues a record. A background thread sends the queue with
     ``OpensearchClient.bulk`` every ``flush_interval`` seconds, or as soon as
     ``buffer_size`` records are waiting, so ``emit`` never blocks on the network.
-    If more than ``max_queue`` records are waiting, the oldest are dropped. Dropped
-    and rejected records are counted in ``dropped``.
+    If more than ``max_queue`` records are waiting, the oldest are dropped.
+
+    ``OpensearchClient.bulk`` sends documents that fail to index twice more, then
+    gives up on them. Every dropped record is counted in ``dropped``. A retry can
+    index a record twice if only the response was lost.
 
     Records logged by the flush thread itself, such as what ``requests`` logs
     while sending, are ignored so that sending cannot create records to send.
@@ -95,7 +101,7 @@ class OpensearchHandler(logging.Handler):
         self._wake_event = Event()
         self._stop_event = Event()
         self._flush_thread = Thread(
-            target=self._run, name="osclient-log-flush", daemon=True
+            target=self._run, name="opensearch_client-log-flush", daemon=True
         )
         # Runs before handle() takes the handler lock, so the flush thread's own
         # records can never wait on a thread that is waiting for the flush thread.
@@ -175,17 +181,6 @@ class OpensearchHandler(logging.Handler):
             doc["exc_text"] = record.exc_text
         return doc
 
-    def _index_for(self, record: logging.LogRecord) -> str:
-        """Return the index a record belongs in (the base name, plus a date if used).
-
-        Args:
-            record (logging.LogRecord): the record being indexed.
-
-        Returns:
-            str: the target index name.
-        """
-        raise NotImplementedError
-
     def _ensure_index(self, index: str) -> bool:
         """Create the index if it does not exist yet.
 
@@ -201,18 +196,6 @@ class OpensearchHandler(logging.Handler):
         if exists.data:
             return True
         return bool(self._client.create_index({}, index))
-
-    def _send(self, documents: list[tuple[str, dict[str, Any]]]) -> None:
-        """Index ``(index, document)`` pairs with ``OpensearchClient.bulk``.
-
-        A failure is never raised or logged through ``logging``; the affected
-        documents are added to ``dropped`` instead.
-
-        Args:
-            documents (list[tuple[str, dict[str, Any]]]): the documents to send,
-                each paired with its target index.
-        """
-        raise NotImplementedError
 
     def _run(self) -> None:
         """Send the queue on the flush thread until ``close`` is called.
@@ -242,8 +225,8 @@ class OpensearchHandler(logging.Handler):
     def _send_buffered(self) -> None:
         """Send everything queued with ``OpensearchClient.bulk``, if anything is.
 
-        Runs only on the flush thread. Records lost to a failed send or an
-        exception are added to ``dropped``.
+        Runs only on the flush thread. Records that still fail after ``bulk``'s
+        retries, or that are lost to an exception, are added to ``dropped``.
         """
         with self._lock:
             if not self._buffer:
@@ -254,7 +237,7 @@ class OpensearchHandler(logging.Handler):
         try:
             if not self._index_ready:
                 self._index_ready = self._ensure_index(self.index)
-            result = self._client.bulk(documents, self.index)
+            result = self._client.bulk(documents, self.index, max_retries=_SEND_RETRIES)
         except Exception:
             with self._lock:
                 self._dropped += len(documents)
