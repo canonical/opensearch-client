@@ -25,6 +25,9 @@ from opensearch_client.result import Failure, OpensearchResult, Success
 # reached when the code under test is broken.
 _WAIT_SECONDS = 5
 
+# How long to watch for activity that should not happen.
+_QUIET_SECONDS = 0.3
+
 
 def _parse_bulk_documents(body: bytes | None) -> list[dict[str, Any]]:
     """Return the documents in a bulk body, skipping each document's action line."""
@@ -40,7 +43,8 @@ class FakeCluster:
 
     Attributes:
         calls (list[tuple[str, str]]): every (method, path) requested, in order.
-        documents (list[dict[str, Any]]): the documents of each bulk request.
+        documents (list[dict[str, Any]]): the documents of every bulk request the
+            cluster accepted, in order.
         bulk_received (threading.Event): set once a bulk request has been recorded.
     """
 
@@ -92,16 +96,24 @@ class FakeCluster:
             logging.warning("transport chatter")
         if self.bulk_error is not None:
             raise self.bulk_error
-        self.documents.extend(_parse_bulk_documents(body))
+        accepted = isinstance(self.bulk_result, Success) and not (
+            self.bulk_result.data.get("errors")
+        )
+        if accepted:
+            self.documents.extend(_parse_bulk_documents(body))
         self.bulk_received.set()
         return self.bulk_result
+
+    def recover(self) -> None:
+        """Start accepting bulk requests."""
+        self.bulk_result = Success({"items": []})
 
 
 class BlockingCluster(FakeCluster):
     """A FakeCluster that holds the first bulk request open until released."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.send_started = threading.Event()
         self.release_send = threading.Event()
         self.is_first_send = True
@@ -147,6 +159,13 @@ def _running(handler: OpensearchHandler) -> Generator[OpensearchHandler]:
         yield handler
     finally:
         handler.close()
+
+
+def _item_failure(status: int, error_type: str) -> OpensearchResult[Any]:
+    """A bulk response in which the only document failed with this error."""
+    error = {"type": error_type}
+    item = {"index": {"status": status, "error": error}}
+    return Success({"errors": True, "items": [item]})
 
 
 def _record(message: str) -> logging.LogRecord:
@@ -290,16 +309,105 @@ def test_index_is_created_only_when_missing_and_only_on_first_flush() -> None:
             assert cluster.calls == expected_calls
 
 
-def test_failed_send_is_retried_twice_then_counted_as_dropped() -> None:
-    """A failing send is tried three times in all, and its records are dropped."""
-    cluster = FakeCluster(bulk_result=Failure("down", status=500))
-    with _running(_handler(cluster)) as handler:
-        handler.emit(_record("one"))
-        handler.emit(_record("two"))
+def test_failed_sends_are_kept_and_resent_until_the_handler_closes() -> None:
+    """An outage loses nothing until close, and nothing retries in a tight loop."""
+    cluster = FakeCluster(bulk_result=Failure("down", status=None))
+    with _running(_handler(cluster, buffer_size=2)) as handler:
+        handler.emit(_record("a"))
         handler.flush()
 
+        # The first attempt and bulk's two retries.
         assert cluster.calls.count(("POST", "_bulk")) == 3
+        assert handler.dropped == 0
+
+        cluster.bulk_received.clear()
+        handler.emit(_record("b"))  # fills the buffer, but the handler backs off
+        assert not cluster.bulk_received.wait(_QUIET_SECONDS), "retrying in a loop"
+
+        cluster.recover()
+        handler.flush()
+        assert [document["message"] for document in cluster.documents] == ["a", "b"]
+        assert handler.dropped == 0
+
+        cluster.bulk_result = Failure("down", status=None)
+        handler.emit(_record("c"))
+        handler.close()
+        assert handler.dropped == 1  # closing gives up on what could not be sent
+
+
+def test_records_kept_after_a_failed_send_respect_max_queue_oldest_first() -> None:
+    """Kept records go back in front, and the oldest are dropped past max_queue."""
+    cluster = BlockingCluster(bulk_result=Failure("down", status=None))
+    with _running(_handler(cluster, buffer_size=3, max_queue=3)) as handler:
+        for name in ("a", "b", "c"):
+            handler.emit(_record(name))  # the third fills the buffer; its send blocks
+        assert cluster.send_started.wait(_WAIT_SECONDS), "the send never started"
+        handler.emit(_record("d"))
+        handler.emit(_record("e"))
+
+        cluster.release_send.set()  # the blocked send now fails
+        handler.flush()
         assert handler.dropped == 2
+
+        cluster.recover()
+        handler.flush()
+        assert [document["message"] for document in cluster.documents] == [
+            "c",
+            "d",
+            "e",
+        ]
+        assert handler.dropped == 2
+
+
+def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> None:
+    """Only a failure that can clear up later is worth sending again."""
+    cases = (
+        (503, "unavailable_shards_exception", True),
+        (429, "es_rejected_execution_exception", True),
+        (403, "cluster_block_exception", True),
+        (404, "index_not_found_exception", True),
+        (400, "mapper_parsing_exception", False),
+        (403, "security_exception", False),
+    )
+
+    for status, error_type, is_kept in cases:
+        cluster = FakeCluster(bulk_result=_item_failure(status, error_type))
+        with _running(_handler(cluster)) as handler:
+            handler.emit(_record("one"))
+            handler.flush()
+            cluster.recover()
+            handler.flush()
+
+            expected = (1, 0) if is_kept else (0, 1)  # (delivered, dropped)
+            assert (len(cluster.documents), handler.dropped) == expected, (
+                f"{status} {error_type}"
+            )
+
+
+def test_index_deleted_while_running_is_recreated() -> None:
+    """After a missing-index failure the index is created before the next send."""
+    cluster = FakeCluster()
+    with _running(_handler(cluster)) as handler:
+        handler.emit(_record("one"))
+        handler.flush()
+
+        cluster.index_exists = False  # the index is deleted
+        cluster.bulk_result = _item_failure(404, "index_not_found_exception")
+        cluster.calls.clear()
+        handler.emit(_record("two"))
+        handler.flush()
+        cluster.recover()
+        handler.flush()
+
+        assert cluster.calls[-3:] == [
+            ("GET", "logs"),
+            ("PUT", "logs"),
+            ("POST", "_bulk"),
+        ]
+        assert [document["message"] for document in cluster.documents] == [
+            "one",
+            "two",
+        ]
 
 
 def test_a_send_that_raises_is_contained() -> None:

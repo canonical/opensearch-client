@@ -20,6 +20,7 @@ what a log handler needs on top of it:
 import copy
 import logging
 import traceback
+from collections import deque
 from datetime import datetime, timezone
 from threading import Event, Lock, Thread, current_thread
 from typing import Any, Dict, List
@@ -33,8 +34,13 @@ _FLUSH_WAIT_SECONDS = 10.0
 # How long close() waits for the flush thread to finish its final send.
 _CLOSE_JOIN_SECONDS = 5.0
 
-# How many more times bulk() sends documents that failed to index.
+# How many more times bulk() immediately resends documents that failed to index.
+# Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
+
+# Errors that can clear up later, whatever their HTTP status: the disk watermark
+# blocking writes, and an index that was deleted and will be created again.
+_TEMPORARY_ERROR_TYPES = ("cluster_block_exception", "index_not_found_exception")
 
 
 class OpensearchHandler(logging.Handler):
@@ -45,9 +51,14 @@ class OpensearchHandler(logging.Handler):
     ``buffer_size`` records are waiting, so ``emit`` never blocks on the network.
     If more than ``max_queue`` records are waiting, the oldest are dropped.
 
-    ``OpensearchClient.bulk`` sends documents that fail to index twice more, then
-    gives up on them. Every dropped record is counted in ``dropped``. A retry can
-    index a record twice if only the response was lost.
+    ``OpensearchClient.bulk`` sends documents that fail to index twice more. If
+    they still fail for a temporary reason (the cluster is unreachable,
+    overloaded or unavailable), they go back to the front of the queue and are
+    tried again one ``flush_interval`` later, or when ``flush`` is called. A
+    document the cluster rejects for its content is dropped at once. Records that
+    are still unsent when the handler closes are dropped. Every dropped record is
+    counted in ``dropped``. A retry can index a record twice if only the response
+    was lost.
 
     Records logged by the flush thread itself, such as what ``requests`` logs
     while sending, are ignored so that sending cannot create records to send.
@@ -91,11 +102,16 @@ class OpensearchHandler(logging.Handler):
         self._client = client
         self._index_ready = False
 
-        # Guards _buffer, _dropped and _flush_waiters. Held only for quick updates,
-        # never while sending, so a slow send does not block other threads' logging.
+        # Guards _buffer, _dropped, _backing_off and _flush_waiters. Held only for
+        # quick updates, never while sending, so a slow send does not block other
+        # threads' logging.
         self._lock = Lock()
-        self._buffer: List[Dict[str, Any]] = []
+        self._buffer: deque[Dict[str, Any]] = deque()
         self._dropped = 0
+        # True after a send failed and its records were kept. While set, a full
+        # buffer no longer wakes the flush thread, so it retries once per interval
+        # instead of in a loop.
+        self._backing_off = False
         self._flush_waiters: List[Event] = []
 
         self._wake_event = Event()
@@ -125,18 +141,18 @@ class OpensearchHandler(logging.Handler):
 
             with self._lock:
                 self._buffer.append(doc)
-                if len(self._buffer) > self.max_queue:
-                    del self._buffer[0]
-                    self._dropped += 1
+                self._drop_oldest_beyond_max_queue()
                 full = len(self._buffer) >= self.buffer_size
-            if full:
+                wake = full and not self._backing_off
+            if wake:
                 self._wake_event.set()
         except Exception:
             self.handleError(record)
 
     def flush(self) -> None:
-        """Ask the flush thread to send the queue, and wait for it to finish.
+        """Ask the flush thread to send the queue now, and wait for it to finish.
 
+        This tries again even while the handler is waiting after a failed send.
         Waits at most 10 seconds, and returns at once if the handler is closed.
         """
         if not self._flush_thread.is_alive():
@@ -150,7 +166,8 @@ class OpensearchHandler(logging.Handler):
     def close(self) -> None:
         """Stop the flush thread after its final send, then close the handler.
 
-        Waits at most 5 seconds for that final send.
+        Waits at most 5 seconds for that final send. Records it cannot send are
+        dropped.
         """
         self._stop_event.set()
         self._wake_event.set()
@@ -220,19 +237,24 @@ class OpensearchHandler(logging.Handler):
             for waiter in waiters:
                 waiter.set()
             if stopping:
+                with self._lock:
+                    self._dropped += len(self._buffer)
+                    self._buffer.clear()
                 break
 
     def _send_buffered(self) -> None:
         """Send everything queued with ``OpensearchClient.bulk``, if anything is.
 
-        Runs only on the flush thread. Records that still fail after ``bulk``'s
-        retries, or that are lost to an exception, are added to ``dropped``.
+        Runs only on the flush thread. Records that still fail for a temporary
+        reason after ``bulk``'s retries go back to the front of the queue. Records
+        the cluster rejects, or that are lost to an exception, are added to
+        ``dropped``.
         """
         with self._lock:
             if not self._buffer:
                 return
             documents = self._buffer
-            self._buffer = []
+            self._buffer = deque()
 
         try:
             if not self._index_ready:
@@ -242,10 +264,42 @@ class OpensearchHandler(logging.Handler):
             with self._lock:
                 self._dropped += len(documents)
             raise
-        if not result:
-            failed = result.data["failed"] if result.data else len(documents)
+        if result:
             with self._lock:
-                self._dropped += failed
+                self._backing_off = False
+            return
+
+        kept = []
+        rejected = 0
+        for failure in result.data["failures"]:
+            status = failure["status"]
+            error_type = (failure.get("error") or {}).get("type")
+            if error_type == "index_not_found_exception":
+                self._index_ready = False  # create the index before the next send
+            is_temporary = (
+                status is None
+                or status in (408, 429)
+                or status >= 500
+                or error_type in _TEMPORARY_ERROR_TYPES
+            )
+            if is_temporary:
+                kept.append(failure["document"])
+            else:
+                rejected += 1
+        with self._lock:
+            self._dropped += rejected
+            self._buffer.extendleft(reversed(kept))
+            self._drop_oldest_beyond_max_queue()
+            self._backing_off = bool(kept)
+
+    def _drop_oldest_beyond_max_queue(self) -> None:
+        """Drop the oldest queued records while more than ``max_queue`` wait.
+
+        The caller must hold the lock.
+        """
+        while len(self._buffer) > self.max_queue:
+            self._buffer.popleft()
+            self._dropped += 1
 
     def _is_not_from_flush_thread(self, record: logging.LogRecord) -> bool:
         """Filter out records created on the flush thread."""
