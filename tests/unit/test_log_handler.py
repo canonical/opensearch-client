@@ -3,10 +3,12 @@
 
 """Unit tests for opensearch_client.log_handler.OpensearchHandler."""
 
+import contextlib
 import json
 import logging
 import sys
 import threading
+from collections.abc import Iterator
 from typing import Any
 
 from opensearch_client.client import OpensearchClient
@@ -94,10 +96,11 @@ def _parse_bulk_documents(body: bytes | None) -> list[dict[str, Any]]:
 
 
 class RecordingTransport:
-    """Keeps every document sent in a bulk request."""
+    """Keeps every document sent in a bulk request, and signals each arrival."""
 
     def __init__(self) -> None:
         self.documents: list[dict[str, Any]] = []
+        self.bulk_received = threading.Event()
 
     def request(
         self,
@@ -109,6 +112,7 @@ class RecordingTransport:
     ) -> OpensearchResult[Any]:
         if path == "_bulk":
             self.documents.extend(_parse_bulk_documents(body))
+            self.bulk_received.set()
         return Success({"items": []})
 
 
@@ -141,6 +145,26 @@ class BlockingTransport:
         return Success({"items": []})
 
 
+class RaisingTransport:
+    """Raises on every bulk request, signalling each attempt."""
+
+    def __init__(self) -> None:
+        self.bulk_attempted = threading.Event()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
+        if path == "_bulk":
+            self.bulk_attempted.set()
+            raise RuntimeError("boom")
+        return Success({})
+
+
 class ErrorRecordingHandler(OpensearchHandler):
     """Keeps the records passed to handleError instead of printing a traceback."""
 
@@ -153,7 +177,18 @@ class ErrorRecordingHandler(OpensearchHandler):
 
 
 def _handler(transport: Any, **kwargs: Any) -> OpensearchHandler:
+    # An hour, so the timer never fires during a test unless the test sets it.
+    kwargs.setdefault("flush_interval", 3600.0)
     return OpensearchHandler(OpensearchClient(transport), "logs", **kwargs)
+
+
+@contextlib.contextmanager
+def _running(handler: OpensearchHandler) -> Iterator[OpensearchHandler]:
+    """Yield the handler, then close it so its flush thread stops."""
+    try:
+        yield handler
+    finally:
+        handler.close()
 
 
 def _record(message: str) -> logging.LogRecord:
@@ -170,108 +205,154 @@ def _emit_then_signal(
 def test_index_is_created_on_first_flush_only() -> None:
     """Building the handler makes no requests; the first flush creates the index."""
     transport = MissingIndexTransport()
-    handler = _handler(transport, buffer_size=1)
-    assert transport.calls == []
+    with _running(_handler(transport, buffer_size=1)) as handler:
+        assert transport.calls == []
 
-    handler.emit(_record("one"))
-    handler.emit(_record("two"))
+        handler.emit(_record("one"))
+        handler.emit(_record("two"))
 
-    assert transport.calls == [
-        ("GET", "logs"),
-        ("PUT", "logs"),
-        ("POST", "_bulk"),
-        ("POST", "_bulk"),
-    ]
+        assert transport.calls == [
+            ("GET", "logs"),
+            ("PUT", "logs"),
+            ("POST", "_bulk"),
+            ("POST", "_bulk"),
+        ]
 
 
 def test_records_logged_while_sending_are_not_shipped() -> None:
     """On the root logger, the handler ignores what its own transport logs."""
     transport = ChattyTransport()
-    handler = _handler(transport, buffer_size=1)
-    root = logging.getLogger()
-    previous_level = root.level
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
-    try:
-        logging.getLogger("app").info("hello")
-    finally:
-        root.removeHandler(handler)
-        root.setLevel(previous_level)
+    with _running(_handler(transport, buffer_size=1)) as handler:
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        try:
+            logging.getLogger("app").info("hello")
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous_level)
 
-    assert len(transport.bulk_bodies) == 1
-    assert b"hello" in transport.bulk_bodies[0]
-    assert b"chatter" not in transport.bulk_bodies[0]
+        assert len(transport.bulk_bodies) == 1
+        assert b"hello" in transport.bulk_bodies[0]
+        assert b"chatter" not in transport.bulk_bodies[0]
 
 
 def test_failed_send_is_counted_as_dropped() -> None:
     """A failed send does not raise; the lost records show up in ``dropped``."""
-    handler = _handler(FakeTransport(Failure("down", status=500)))
+    transport = FakeTransport(Failure("down", status=500))
+    with _running(_handler(transport)) as handler:
+        handler.emit(_record("one"))
+        handler.emit(_record("two"))
+        handler.flush()
 
-    handler.emit(_record("one"))
-    handler.emit(_record("two"))
-    handler.flush()
-
-    assert handler.dropped == 2
+        assert handler.dropped == 2
 
 
 def test_emit_never_raises() -> None:
     """An error while shipping goes to ``handleError``, not to the caller."""
+    transport = FakeTransport(Success({}), error=RuntimeError("boom"))
     handler = ErrorRecordingHandler(
-        OpensearchClient(FakeTransport(Success({}), error=RuntimeError("boom"))),
-        "logs",
-        buffer_size=1,
+        OpensearchClient(transport), "logs", buffer_size=1, flush_interval=3600.0
     )
+    with _running(handler):
+        handler.emit(_record("one"))
 
-    handler.emit(_record("one"))
-
-    assert len(handler.errored_records) == 1
+        assert len(handler.errored_records) == 1
 
 
 def test_slow_send_neither_blocks_other_threads_nor_loses_records() -> None:
     """Records emitted during a send are not blocked, and arrive in the next flush."""
     transport = BlockingTransport()
-    handler = _handler(transport, buffer_size=2)
-    handler.emit(_record("a"))
-    # Emitting "b" fills the buffer, so this thread's flush blocks inside the send.
-    first_sender = threading.Thread(target=handler.emit, args=(_record("b"),))
-    first_sender.start()
-    assert transport.send_started.wait(_WAIT_SECONDS), "the send never started"
+    with _running(_handler(transport, buffer_size=2)) as handler:
+        handler.emit(_record("a"))
+        # Emitting "b" fills the buffer, so this thread's flush blocks in the send.
+        first_sender = threading.Thread(target=handler.emit, args=(_record("b"),))
+        first_sender.start()
+        assert transport.send_started.wait(_WAIT_SECONDS), "the send never started"
 
-    emitted = threading.Event()
-    other_sender = threading.Thread(
-        target=_emit_then_signal, args=(handler, _record("c"), emitted)
-    )
-    other_sender.start()
-    emit_returned = emitted.wait(_WAIT_SECONDS)
-    transport.release_send.set()
-    first_sender.join()
-    other_sender.join()
-    handler.flush()
+        emitted = threading.Event()
+        other_sender = threading.Thread(
+            target=_emit_then_signal, args=(handler, _record("c"), emitted)
+        )
+        other_sender.start()
+        emit_returned = emitted.wait(_WAIT_SECONDS)
+        transport.release_send.set()
+        first_sender.join()
+        other_sender.join()
+        handler.flush()
 
-    assert emit_returned, "emit blocked while another thread was sending"
-    assert transport.messages == ["a", "b", "c"]
+        assert emit_returned, "emit blocked while another thread was sending"
+        assert transport.messages == ["a", "b", "c"]
 
 
 def test_args_and_exceptions_become_plain_json_documents() -> None:
     """Formatted args and exception text are indexed; raw args and exc_info are not."""
     transport = RecordingTransport()
-    handler = _handler(transport, buffer_size=1)
-    try:
-        raise ValueError("bad value")
-    except ValueError:
-        exc_info = sys.exc_info()
-    record = logging.LogRecord(
-        "test", logging.ERROR, __file__, 1, "got %s and %d", ("text", 3), exc_info
-    )
+    with _running(_handler(transport, buffer_size=1)) as handler:
+        try:
+            raise ValueError("bad value")
+        except ValueError:
+            exc_info = sys.exc_info()
+        record = logging.LogRecord(
+            "test", logging.ERROR, __file__, 1, "got %s and %d", ("text", 3), exc_info
+        )
 
-    handler.emit(record)
+        handler.emit(record)
 
-    assert handler.dropped == 0
-    assert len(transport.documents) == 1
-    document = transport.documents[0]
-    assert document["message"] == "got text and 3"
-    assert document["levelname"] == "ERROR"
-    assert document["name"] == "test"
-    assert "ValueError: bad value" in document["exc_text"]
-    assert "args" not in document
-    assert "exc_info" not in document
+        assert handler.dropped == 0
+        assert len(transport.documents) == 1
+        document = transport.documents[0]
+        assert document["message"] == "got text and 3"
+        assert document["levelname"] == "ERROR"
+        assert document["name"] == "test"
+        assert "ValueError: bad value" in document["exc_text"]
+        assert "args" not in document
+        assert "exc_info" not in document
+
+
+def test_buffered_records_are_flushed_on_the_interval() -> None:
+    """A quiet handler still ships its records, without an explicit flush."""
+    transport = RecordingTransport()
+    handler = _handler(transport, buffer_size=1000, flush_interval=0.05)
+    with _running(handler):
+        handler.emit(_record("quiet"))
+
+        assert transport.bulk_received.wait(_WAIT_SECONDS), "nothing was flushed"
+    assert transport.documents[0]["message"] == "quiet"
+
+
+def test_close_sends_remaining_records_and_stops_the_flush_thread() -> None:
+    """Closing flushes what is queued and leaves no thread running."""
+    transport = RecordingTransport()
+    handler = _handler(transport, buffer_size=1000)
+    handler.emit(_record("last"))
+
+    handler.close()
+
+    assert transport.documents[0]["message"] == "last"
+    assert not handler._flush_thread.is_alive()
+
+
+def test_close_never_raises() -> None:
+    """A failing final flush is reported, not raised into the shutting-down app."""
+    handler = _handler(RaisingTransport(), buffer_size=1000)
+    handler.emit(_record("last"))
+
+    handler.close()
+
+    assert not handler._flush_thread.is_alive()
+
+
+def test_flush_thread_survives_a_failing_flush() -> None:
+    """One failed flush must not stop later flushes."""
+    transport = RaisingTransport()
+    handler = _handler(transport, buffer_size=1000, flush_interval=0.05)
+    with _running(handler):
+        handler.emit(_record("one"))
+        assert transport.bulk_attempted.wait(_WAIT_SECONDS), "no flush was attempted"
+        transport.bulk_attempted.clear()
+
+        handler.emit(_record("two"))
+
+        assert transport.bulk_attempted.wait(_WAIT_SECONDS), "the thread stopped"

@@ -3,7 +3,7 @@
 
 """A logging handler that ships log records to OpenSearch.
 
-The handler is a standard :class:`logging.Handler`: attach it to a logger and
+The handler is a standard :class:`logging.Handler`: attach it to a logger, and
 every record that reaches it is indexed into OpenSearch through an
 :class:`~opensearch_client.client.OpensearchClient`. Batching, retries and transport
 selection are delegated to :meth:`OpensearchClient.bulk`; this module only adds
@@ -19,20 +19,24 @@ what a log handler needs on top of it:
 
 import copy
 import logging
+import traceback
 from datetime import datetime, timezone
-from threading import Lock, Timer, local
+from threading import Event, Lock, Thread, local
 from typing import Any, Dict, List
 
 from opensearch_client.client import OpensearchClient
+
+# How long close() waits for an in-progress send before flushing the rest itself.
+_CLOSE_JOIN_SECONDS = 5.0
 
 
 class OpensearchHandler(logging.Handler):
     """Ship log records to an OpenSearch index.
 
-    ``emit`` only enqueues a record; a background thread sends queued records
-    with ``OpensearchClient.bulk``. If OpenSearch is unreachable the queue is
-    bounded and the oldest records are dropped, and the drop count is kept in
-    ``dropped``.
+    ``emit`` queues a record and sends the queue with ``OpensearchClient.bulk``
+    once ``buffer_size`` records are waiting. A background thread also sends the
+    queue every ``flush_interval`` seconds, so records from a quiet process are
+    not held indefinitely. Records the cluster rejects are counted in ``dropped``.
     """
 
     def __init__(
@@ -80,6 +84,12 @@ class OpensearchHandler(logging.Handler):
         self._dropped = 0
         # Per thread, so records logged on another thread are still shipped.
         self._local = local()
+
+        self._stop_event = Event()
+        self._flush_thread = Thread(
+            target=self._run, name="osclient-log-flush", daemon=True
+        )
+        self._flush_thread.start()
 
     @property
     def dropped(self) -> int:
@@ -137,8 +147,11 @@ class OpensearchHandler(logging.Handler):
                 self._dropped += failed
 
     def close(self) -> None:
-        """Stop the background thread after a final flush, then close the handler."""
-        self.flush()
+        """Stop the background thread, send what is still queued, then close."""
+        self._stop_event.set()
+        self._flush_thread.join(_CLOSE_JOIN_SECONDS)
+        self._flush_and_report_errors()
+        super().close()
 
     def _to_document(self, record: logging.LogRecord) -> Dict[str, Any]:
         """Convert a log record into a document.
@@ -204,8 +217,21 @@ class OpensearchHandler(logging.Handler):
         raise NotImplementedError
 
     def _run(self) -> None:
-        """Run the background loop: flush when the buffer fills or the interval passes.
+        """Flush every ``flush_interval`` seconds until ``close`` is called.
 
-        Exits after a final flush once ``close`` signals it to stop.
+        A failed flush never ends the loop.
         """
-        raise NotImplementedError
+        while not self._stop_event.wait(self.flush_interval):
+            self._flush_and_report_errors()
+
+    def _flush_and_report_errors(self) -> None:
+        """Flush, reporting any error to stderr as ``handleError`` does.
+
+        Used where there is no record to hand to ``handleError`` and the caller
+        must not see an exception: the background thread and ``close``.
+        """
+        try:
+            self.flush()
+        except Exception:
+            if logging.raiseExceptions:
+                traceback.print_exc()
