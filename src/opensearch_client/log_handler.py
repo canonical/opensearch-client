@@ -23,7 +23,7 @@ import traceback
 from collections import deque
 from datetime import datetime, timezone
 from threading import Event, Lock, Thread, current_thread
-from typing import Any, Dict, List
+from typing import Any
 
 from opensearch_client.client import OpensearchClient
 
@@ -88,16 +88,15 @@ class OpensearchHandler(logging.Handler):
             extra_fields (dict[str, Any] | None): fields added to every
                 document, e.g. ``{"service": {"name": "my-service"}}``.
         """
-        logging.Handler.__init__(self)
+        super().__init__(level)
 
         self.buffer_size = buffer_size
         self.flush_interval = flush_interval
         self.index = index
-        self.level = level
         self.max_queue = max_queue
         if extra_fields is None:
             extra_fields = {}
-        self.extra_fields = copy.deepcopy(extra_fields.copy())
+        self.extra_fields = copy.deepcopy(extra_fields)
 
         self._client = client
         self._index_ready = False
@@ -106,13 +105,13 @@ class OpensearchHandler(logging.Handler):
         # quick updates, never while sending, so a slow send does not block other
         # threads' logging.
         self._lock = Lock()
-        self._buffer: deque[Dict[str, Any]] = deque()
+        self._buffer: deque[dict[str, Any]] = deque()
         self._dropped = 0
         # True after a send failed and its records were kept. While set, a full
         # buffer no longer wakes the flush thread, so it retries once per interval
         # instead of in a loop.
         self._backing_off = False
-        self._flush_waiters: List[Event] = []
+        self._flush_waiters: list[Event] = []
 
         self._wake_event = Event()
         self._stop_event = Event()
@@ -174,7 +173,7 @@ class OpensearchHandler(logging.Handler):
         self._flush_thread.join(_CLOSE_JOIN_SECONDS)
         super().close()
 
-    def _to_document(self, record: logging.LogRecord) -> Dict[str, Any]:
+    def _to_document(self, record: logging.LogRecord) -> dict[str, Any]:
         """Convert a log record into a document.
 
         Covers the timestamp, level, logger name, message, exception details when
