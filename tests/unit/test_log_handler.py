@@ -12,7 +12,6 @@ import contextlib
 import json
 import logging
 import os
-import platform
 import socket
 import sys
 import threading
@@ -20,6 +19,7 @@ import time
 from collections.abc import Generator
 from typing import Any
 
+from opensearch_client import log_handler
 from opensearch_client.client import OpensearchClient
 from opensearch_client.log_handler import OpensearchHandler
 from opensearch_client.result import Failure, OpensearchResult, Success
@@ -138,6 +138,24 @@ class BlockingCluster(FakeCluster):
         return super().request(method, path, body, content_type, timeout)
 
 
+class ThreadSpy:
+    """Stands in for Thread: records the handler's attributes at start, runs nothing."""
+
+    attributes_at_start: set[str] = set()
+
+    def __init__(self, target: Any, name: str, daemon: bool) -> None:
+        self.target = target
+
+    def start(self) -> None:
+        ThreadSpy.attributes_at_start = set(vars(self.target.__self__))
+
+    def is_alive(self) -> bool:
+        return False
+
+    def join(self, timeout: float | None = None) -> None:
+        pass
+
+
 class ErrorRecordingHandler(OpensearchHandler):
     """Keeps the records passed to handleError instead of printing a traceback."""
 
@@ -219,6 +237,9 @@ def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
         assert document["log"]["level"] == "error"
         assert document["log"]["logger"] == "test"
         assert document["event"]["severity"] == logging.ERROR
+        # With no service_name, the name comes from the running program.
+        assert document["service"]["name"]
+        assert document["event"]["dataset"] == document["service"]["name"]
         assert document["error"]["type"] == "ValueError"
         assert document["error"]["message"] == "bad value"
         assert "ValueError: bad value" in document["error"]["stack_trace"]
@@ -227,9 +248,14 @@ def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
 
 
 def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
-    """Shared identity, extras and extra_fields end up in every document."""
+    """Shared identity, extras and extra_fields (which win) are in every document."""
     cluster = FakeCluster()
-    extra_fields = {"service": {"version": "1.2"}, "labels": {"env": "test"}}
+    extra_fields = {
+        "service": {"version": "1.2"},
+        "labels": {"env": "test"},
+        "event": {"dataset": "custom-dataset"},
+        "log": {"level": "OVERRIDE"},
+    }
     handler = _handler(cluster, service_name="superset", extra_fields=extra_fields)
     extra = {"collector": "superset", "batch.size": 3, "skipped": None}
     first = _record("one", extra)
@@ -246,18 +272,20 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert first_document["@timestamp"] == "2023-11-14T22:13:20.123Z"
         assert first_document["ecs"] == {"version": "9.0"}
         assert first_document["host"] == {"name": socket.gethostname()}
-        assert first_document["agent"]["type"] == "osclient"
+        assert first_document["agent"]["type"] == "opensearch_client"
         # extra_fields are merged into service, not a replacement for it.
         service = first_document["service"]
         assert service["name"] == "superset"
         assert service["version"] == "1.2"
         assert service["ephemeral_id"] == second_document["service"]["ephemeral_id"]
+        # extra_fields replace a default (event.dataset) and a field taken from
+        # the record (log.level), and leave their siblings alone.
         assert first_document["event"] == {
-            "dataset": "superset",
+            "dataset": "custom-dataset",
             "severity": logging.INFO,
-            "sequence": 1,
         }
-        assert second_document["event"]["sequence"] == 2
+        assert first_document["log"]["level"] == "OVERRIDE"
+        assert first_document["log"]["logger"] == "test"
         assert first_document["labels"] == {
             "env": "test",
             "collector": "superset",
@@ -271,31 +299,45 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert second_document["labels"] == {"env": "test"}
 
 
-def test_system_details_are_opt_in_and_service_name_has_a_default() -> None:
-    """OS and process details are added only on request."""
-    plain_cluster = FakeCluster()
-    detailed_cluster = FakeCluster()
-    plain = _handler(plain_cluster)
-    detailed = _handler(detailed_cluster, include_system_details=True)
+def test_ephemeral_id_is_the_systemd_invocation_id_or_unique_per_handler() -> None:
+    """service.ephemeral_id changes with each run of the service."""
+    original = os.environ.get("INVOCATION_ID")
+    clusters = [FakeCluster(), FakeCluster(), FakeCluster()]
+    try:
+        os.environ["INVOCATION_ID"] = "abc123"
+        from_systemd = _handler(clusters[0])
+        del os.environ["INVOCATION_ID"]
+        first = _handler(clusters[1])
+        second = _handler(clusters[2])
+    finally:
+        if original is None:
+            os.environ.pop("INVOCATION_ID", None)
+        else:
+            os.environ["INVOCATION_ID"] = original
 
-    with _running(plain), _running(detailed):
-        plain.emit(_record("one"))
-        plain.flush()
-        detailed.emit(_record("one"))
-        detailed.flush()
+    ephemeral_ids = []
+    for handler, cluster in zip((from_systemd, first, second), clusters):
+        with _running(handler):
+            handler.emit(_record("one"))
+            handler.flush()
+        ephemeral_ids.append(cluster.documents[0]["service"]["ephemeral_id"])
 
-    plain_document = plain_cluster.documents[0]
-    detailed_document = detailed_cluster.documents[0]
-    # With no service_name the name comes from the running program.
-    assert plain_document["service"]["name"]
-    assert plain_document["event"]["dataset"] == plain_document["service"]["name"]
-    assert set(plain_document["process"]) == {"pid", "name", "thread"}
-    assert set(plain_document["host"]) == {"name"}
-    assert detailed_document["host"]["architecture"] == platform.machine()
-    assert detailed_document["host"]["os"]["name"]
-    assert detailed_document["process"]["executable"] == sys.executable
-    assert detailed_document["process"]["parent"] == {"pid": os.getppid()}
-    assert detailed_document["process"]["working_directory"] == os.getcwd()
+    assert ephemeral_ids[0] == "abc123"
+    assert ephemeral_ids[1] and ephemeral_ids[2]
+    assert ephemeral_ids[1] != ephemeral_ids[2]
+
+
+def test_flush_thread_starts_after_the_handler_is_fully_set_up() -> None:
+    """A thread started early could use state that does not exist yet."""
+    original = log_handler.Thread
+    setattr(log_handler, "Thread", ThreadSpy)
+    try:
+        handler = _handler(FakeCluster())
+    finally:
+        setattr(log_handler, "Thread", original)
+
+    assert ThreadSpy.attributes_at_start == set(vars(handler))
+    handler.close()
 
 
 def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
@@ -322,8 +364,6 @@ def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
             "c",
             "d",
         ]
-        # The dropped record "b" was number 2, so the gap shows the loss.
-        assert [d["event"]["sequence"] for d in cluster.documents] == [1, 3, 4]
         assert handler.dropped == 1
 
 

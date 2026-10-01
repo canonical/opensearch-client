@@ -17,18 +17,15 @@ what a log handler needs on top of it:
   never feeds back into the handler itself.
 """
 
-import copy
 import json
 import logging
 import os
-import platform
 import socket
 import sys
 import traceback
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version
 from threading import Event, Lock, Thread, current_thread
 from typing import Any
 
@@ -130,7 +127,6 @@ class OpensearchHandler(logging.Handler):
         flush_interval: float = 5.0,
         max_queue: int = 10000,
         service_name: str | None = None,
-        include_system_details: bool = False,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
         """Create the handler and start its background flush thread.
@@ -147,11 +143,9 @@ class OpensearchHandler(logging.Handler):
                 for example the syslog tag the collector sends events under, so
                 logs and events can be matched. Defaults to the name of the
                 running program.
-            include_system_details (bool): also add the OS, architecture, the
-                interpreter's path, the parent process and the working directory
-                to every document. Off by default to keep documents small.
-            extra_fields (dict[str, Any] | None): fields merged into every
-                document, replacing the defaults where they overlap, e.g.
+            extra_fields (dict[str, Any] | None): ECS fields merged into every
+                document. They replace any field of the same name, including
+                those taken from the record, e.g.
                 ``{"service": {"version": "1.2"}, "labels": {"env": "prod"}}``.
         """
         super().__init__(level)
@@ -161,34 +155,38 @@ class OpensearchHandler(logging.Handler):
         self.index = index
         self._index_ready = False
 
-        self.buffer_size = buffer_size
-        self.flush_interval = flush_interval
-        self.max_queue = max_queue
-        self._static_document = self._build_static_document(
-            service_name, include_system_details, extra_fields or {}
-        )
-
-        # Guards _buffer, _dropped, _sequence, _backing_off and _flush_waiters. Held
+        # Create the lock
+        # Guards _buffer, _dropped, _backing_off and _flush_waiters. Held
         # only for quick updates, never while sending, so a slow send does not
         # block other threads' logging.
         self._lock = Lock()
+
+        # Configure the buffer
         self._buffer: deque[dict[str, Any]] = deque()
+        self.buffer_size = buffer_size
+        self.max_queue = max_queue
         self._dropped = 0
-        self._sequence = 0
         # True after a send failed and its records were kept. While set, a full
         # buffer no longer wakes the flush thread, so it retries once per interval
         # instead of in a loop.
         self._backing_off = False
         self._flush_waiters: list[Event] = []
 
+        # Creates the base document with fields that are shared between all logs
+        self._static_document = self._build_static_document(
+            service_name, extra_fields or {}
+        )
+
+        # Configure the flush mechanism / timer. The thread starts last, so that
+        # everything it uses exists before it runs.
+        self.flush_interval = flush_interval
         self._wake_event = Event()
         self._stop_event = Event()
         self._flush_thread = Thread(
             target=self._run, name="opensearch_client-log-flush", daemon=True
         )
-        # Runs before handle() takes the handler lock, so the flush thread's own
-        # records can never wait on a thread that is waiting for the flush thread.
-        self.addFilter(self._is_not_from_flush_thread)
+        # Filter out records emitted by the flushing thread
+        self.addFilter(lambda record: current_thread() is not self._flush_thread)
         self._flush_thread.start()
 
     @property
@@ -204,10 +202,7 @@ class OpensearchHandler(logging.Handler):
         """
         try:
             self.format(record)
-            with self._lock:
-                self._sequence += 1
-                sequence = self._sequence
-            doc = self._format_record(record, sequence)
+            doc = self._format_record(record)
 
             with self._lock:
                 self._buffer.append(doc)
@@ -247,19 +242,18 @@ class OpensearchHandler(logging.Handler):
     def _build_static_document(
         self,
         service_name: str | None,
-        include_system_details: bool,
         extra_fields: dict[str, Any],
     ) -> dict[str, Any]:
         """Build the fields that are the same in every document.
 
         Args:
             service_name (str | None): the ``service.name``, or None to derive it.
-            include_system_details (bool): whether to add OS and process details.
             extra_fields (dict[str, Any]): caller fields, merged last.
 
         Returns:
             dict[str, Any]: the fields every document starts from.
         """
+        # If the handler was not given a `service_name` at initialization
         if service_name is None:
             # python -m package.module gives the module, a script gives its name.
             main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
@@ -279,37 +273,13 @@ class OpensearchHandler(logging.Handler):
                 "ephemeral_id": os.environ.get("INVOCATION_ID") or uuid.uuid4().hex,
             },
             "event": {"dataset": service_name},
-            "agent": {"type": "osclient"},
+            "agent": {"type": "opensearch_client"},
         }
-        try:
-            document["agent"]["version"] = version("osclient")
-        except PackageNotFoundError:
-            pass  # running from a source tree that is not installed
 
-        if include_system_details:
-            try:
-                release = platform.freedesktop_os_release()
-                os_fields = {
-                    "name": release.get("NAME"),
-                    "version": release.get("VERSION_ID"),
-                    "platform": release.get("ID"),
-                }
-            except OSError:
-                os_fields = {"name": platform.system(), "version": platform.release()}
-            document["host"]["architecture"] = platform.machine()
-            document["host"]["os"] = os_fields
-            document["process"] = {
-                "executable": sys.executable,
-                "parent": {"pid": os.getppid()},
-                "working_directory": os.getcwd(),
-            }
-
-        _deep_merge(document, copy.deepcopy(extra_fields))
+        _deep_merge(document, extra_fields)
         return document
 
-    def _format_record(
-        self, record: logging.LogRecord, sequence: int
-    ) -> dict[str, Any]:
+    def _format_record(self, record: logging.LogRecord) -> dict[str, Any]:
         """Convert a log record into an ECS document.
 
         The document starts from the fields every document shares: ``ecs.version``,
@@ -317,13 +287,13 @@ class OpensearchHandler(logging.Handler):
         ``event.dataset``, ``agent.type`` and ``agent.version``, and the caller's
         ``extra_fields``. The record then adds, replacing any overlap:
 
+        The document starts with these fields derived from the record content:
         - ``@timestamp``: when the record was created, in UTC to the millisecond;
         - ``message``: the message with its arguments merged in;
         - ``log.level`` (lower case), ``log.logger``, and the call site as
           ``log.origin.file.name``, ``log.origin.file.line`` and
           ``log.origin.function``;
-        - ``event.severity``: the numeric level, and ``event.sequence``: the
-          number of this record, so a gap shows a record that never arrived;
+        - ``event.severity``: the numeric level
         - ``process.pid``, ``process.name``, ``process.thread.id`` and
           ``process.thread.name``;
         - ``error.type``, ``error.message`` and ``error.stack_trace`` for an
@@ -332,9 +302,18 @@ class OpensearchHandler(logging.Handler):
         - ``python.msg`` (the format string), ``python.pathname`` (the full path,
           since file names repeat across programs) and ``python.task_name``.
 
+        Then, it merges in the fields every document shares: ``ecs.version``,
+        ``host.name``, ``service.name``, ``service.ephemeral_id``, ``event.dataset``,
+        ``agent.type``, and the caller's ``extra_fields``.
+
+        NOTE: The ``extra_fields`` parameter is assumed to be ECS compliant, and no
+        reformatting is applied. WARNING: If ``extra_fields`` contains a duplicate
+        field name to one assigned in this function, the user-determined value in
+        ``extra_fields`` will take precedence, and will overwrite the previously
+        assigned value.
+
         Args:
             record (logging.LogRecord): the record to convert.
-            sequence (int): the record's number within this handler.
 
         Returns:
             dict[str, Any]: the document to index.
@@ -353,7 +332,7 @@ class OpensearchHandler(logging.Handler):
                     "function": record.funcName,
                 },
             },
-            "event": {"severity": record.levelno, "sequence": sequence},
+            "event": {"severity": record.levelno},
             "process": {
                 "pid": record.process,
                 "name": record.processName,
@@ -377,8 +356,10 @@ class OpensearchHandler(logging.Handler):
         elif record.stack_info:
             fields["error"] = {"stack_trace": record.stack_info}
 
-        # ECS keeps custom values in labels: flat, and every value a string. Keys
-        # may not contain the characters ECS reserves.
+        # A log can be invoked with the `extra` parameter (example below):
+        #   `logger.info("message", extra={"extra_field": "extra_value"})`
+        # Any extra fields (fields already in the record that are NOT standard
+        #    attributes) should be nested under the field "labels"
         labels = {}
         for key, value in vars(record).items():
             if key in _STANDARD_RECORD_ATTRIBUTES or value is None:
@@ -394,9 +375,8 @@ class OpensearchHandler(logging.Handler):
         if labels:
             fields["labels"] = labels
 
-        document = copy.deepcopy(self._static_document)
-        _deep_merge(document, fields)
-        return _without_empty(document)
+        _deep_merge(fields, self._static_document)
+        return _without_empty(fields)
 
     def _ensure_index(self, index: str) -> bool:
         """Create the index if it does not exist yet.
@@ -500,7 +480,3 @@ class OpensearchHandler(logging.Handler):
         while len(self._buffer) > self.max_queue:
             self._buffer.popleft()
             self._dropped += 1
-
-    def _is_not_from_flush_thread(self, record: logging.LogRecord) -> bool:
-        """Filter out records created on the flush thread."""
-        return current_thread() is not self._flush_thread
