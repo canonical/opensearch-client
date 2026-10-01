@@ -18,10 +18,17 @@ what a log handler needs on top of it:
 """
 
 import copy
+import json
 import logging
+import os
+import platform
+import socket
+import sys
 import traceback
+import uuid
 from collections import deque
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from threading import Event, Lock, Thread, current_thread
 from typing import Any
 
@@ -38,9 +45,56 @@ _CLOSE_JOIN_SECONDS = 5.0
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
 
-# Errors that can clear up later, whatever their HTTP status: the disk watermark
+# Errors that are classified as transient, and should be retried: the disk watermark
 # blocking writes, and an index that was deleted and will be created again.
 _TEMPORARY_ERROR_TYPES = ("cluster_block_exception", "index_not_found_exception")
+
+# The ECS version the documents conform to.
+_ECS_VERSION = "9.0"
+
+# Every attribute a LogRecord has, so that anything else on a record is known to
+# have come from ``extra=``. Taken from a real record, so attributes added by a
+# later Python version are not mistaken for extras.
+_STANDARD_RECORD_ATTRIBUTES = frozenset(
+    vars(logging.LogRecord("", 0, "", 0, "", (), None))
+) | {"message", "asctime"}
+
+
+def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Merge ``source`` into ``target``, descending into nested dicts.
+
+    Where both hold a dict under the same key their contents are merged. Anything
+    else in ``source`` replaces what ``target`` has.
+
+    Args:
+        target (dict[str, Any]): the dict to update.
+        source (dict[str, Any]): the values to merge in.
+    """
+    for key, value in source.items():
+        existing = target.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            _deep_merge(existing, value)
+        else:
+            target[key] = value
+
+
+def _without_empty(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``mapping`` without ``None`` values or empty dicts.
+
+    Args:
+        mapping (dict[str, Any]): the dict to clean, including nested dicts.
+
+    Returns:
+        dict[str, Any]: the cleaned copy.
+    """
+    cleaned = {}
+    for key, value in mapping.items():
+        if isinstance(value, dict):
+            value = _without_empty(value)
+        if value is None or value == {}:
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 class OpensearchHandler(logging.Handler):
@@ -62,6 +116,8 @@ class OpensearchHandler(logging.Handler):
 
     Records logged by the flush thread itself, such as what ``requests`` logs
     while sending, are ignored so that sending cannot create records to send.
+
+    Each record becomes an ECS document; ``_format_record`` lists the fields.
     """
 
     def __init__(
@@ -73,6 +129,8 @@ class OpensearchHandler(logging.Handler):
         buffer_size: int = 1000,
         flush_interval: float = 5.0,
         max_queue: int = 10000,
+        service_name: str | None = None,
+        include_system_details: bool = False,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
         """Create the handler and start its background flush thread.
@@ -85,28 +143,38 @@ class OpensearchHandler(logging.Handler):
             flush_interval (float): flush at least this often, in seconds.
             max_queue (int): the most records held in memory; beyond this the
                 oldest are dropped and counted in ``dropped``.
-            extra_fields (dict[str, Any] | None): fields added to every
-                document, e.g. ``{"service": {"name": "my-service"}}``.
+            service_name (str | None): the ECS ``service.name`` of every document,
+                for example the syslog tag the collector sends events under, so
+                logs and events can be matched. Defaults to the name of the
+                running program.
+            include_system_details (bool): also add the OS, architecture, the
+                interpreter's path, the parent process and the working directory
+                to every document. Off by default to keep documents small.
+            extra_fields (dict[str, Any] | None): fields merged into every
+                document, replacing the defaults where they overlap, e.g.
+                ``{"service": {"version": "1.2"}, "labels": {"env": "prod"}}``.
         """
         super().__init__(level)
 
-        self.buffer_size = buffer_size
-        self.flush_interval = flush_interval
-        self.index = index
-        self.max_queue = max_queue
-        if extra_fields is None:
-            extra_fields = {}
-        self.extra_fields = copy.deepcopy(extra_fields)
-
+        # Get the client and index name
         self._client = client
+        self.index = index
         self._index_ready = False
 
-        # Guards _buffer, _dropped, _backing_off and _flush_waiters. Held only for
-        # quick updates, never while sending, so a slow send does not block other
-        # threads' logging.
+        self.buffer_size = buffer_size
+        self.flush_interval = flush_interval
+        self.max_queue = max_queue
+        self._static_document = self._build_static_document(
+            service_name, include_system_details, extra_fields or {}
+        )
+
+        # Guards _buffer, _dropped, _sequence, _backing_off and _flush_waiters. Held
+        # only for quick updates, never while sending, so a slow send does not
+        # block other threads' logging.
         self._lock = Lock()
         self._buffer: deque[dict[str, Any]] = deque()
         self._dropped = 0
+        self._sequence = 0
         # True after a send failed and its records were kept. While set, a full
         # buffer no longer wakes the flush thread, so it retries once per interval
         # instead of in a loop.
@@ -136,7 +204,10 @@ class OpensearchHandler(logging.Handler):
         """
         try:
             self.format(record)
-            doc = self._to_document(record)
+            with self._lock:
+                self._sequence += 1
+                sequence = self._sequence
+            doc = self._format_record(record, sequence)
 
             with self._lock:
                 self._buffer.append(doc)
@@ -173,29 +244,159 @@ class OpensearchHandler(logging.Handler):
         self._flush_thread.join(_CLOSE_JOIN_SECONDS)
         super().close()
 
-    def _to_document(self, record: logging.LogRecord) -> dict[str, Any]:
-        """Convert a log record into a document.
+    def _build_static_document(
+        self,
+        service_name: str | None,
+        include_system_details: bool,
+        extra_fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the fields that are the same in every document.
 
-        Covers the timestamp, level, logger name, message, exception details when
-        present, the host name, the program name, any ``extra=`` fields on the
-        record, and the handler's ``extra_fields``.
+        Args:
+            service_name (str | None): the ``service.name``, or None to derive it.
+            include_system_details (bool): whether to add OS and process details.
+            extra_fields (dict[str, Any]): caller fields, merged last.
+
+        Returns:
+            dict[str, Any]: the fields every document starts from.
+        """
+        if service_name is None:
+            # python -m package.module gives the module, a script gives its name.
+            main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            if main_spec is not None and main_spec.name:
+                service_name = main_spec.name
+            elif sys.argv and sys.argv[0]:
+                service_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+            else:
+                service_name = "unknown_service"
+
+        document: dict[str, Any] = {
+            "ecs": {"version": _ECS_VERSION},
+            "host": {"name": socket.gethostname()},
+            # systemd sets INVOCATION_ID to a new value each time the unit starts.
+            "service": {
+                "name": service_name,
+                "ephemeral_id": os.environ.get("INVOCATION_ID") or uuid.uuid4().hex,
+            },
+            "event": {"dataset": service_name},
+            "agent": {"type": "osclient"},
+        }
+        try:
+            document["agent"]["version"] = version("osclient")
+        except PackageNotFoundError:
+            pass  # running from a source tree that is not installed
+
+        if include_system_details:
+            try:
+                release = platform.freedesktop_os_release()
+                os_fields = {
+                    "name": release.get("NAME"),
+                    "version": release.get("VERSION_ID"),
+                    "platform": release.get("ID"),
+                }
+            except OSError:
+                os_fields = {"name": platform.system(), "version": platform.release()}
+            document["host"]["architecture"] = platform.machine()
+            document["host"]["os"] = os_fields
+            document["process"] = {
+                "executable": sys.executable,
+                "parent": {"pid": os.getppid()},
+                "working_directory": os.getcwd(),
+            }
+
+        _deep_merge(document, copy.deepcopy(extra_fields))
+        return document
+
+    def _format_record(
+        self, record: logging.LogRecord, sequence: int
+    ) -> dict[str, Any]:
+        """Convert a log record into an ECS document.
+
+        The document starts from the fields every document shares: ``ecs.version``,
+        ``host.name``, ``service.name`` and ``service.ephemeral_id``,
+        ``event.dataset``, ``agent.type`` and ``agent.version``, and the caller's
+        ``extra_fields``. The record then adds, replacing any overlap:
+
+        - ``@timestamp``: when the record was created, in UTC to the millisecond;
+        - ``message``: the message with its arguments merged in;
+        - ``log.level`` (lower case), ``log.logger``, and the call site as
+          ``log.origin.file.name``, ``log.origin.file.line`` and
+          ``log.origin.function``;
+        - ``event.severity``: the numeric level, and ``event.sequence``: the
+          number of this record, so a gap shows a record that never arrived;
+        - ``process.pid``, ``process.name``, ``process.thread.id`` and
+          ``process.thread.name``;
+        - ``error.type``, ``error.message`` and ``error.stack_trace`` for an
+          exception, or ``error.stack_trace`` alone for ``stack_info``;
+        - ``labels``: the record's ``extra=`` attributes, as strings;
+        - ``python.msg`` (the format string), ``python.pathname`` (the full path,
+          since file names repeat across programs) and ``python.task_name``.
 
         Args:
             record (logging.LogRecord): the record to convert.
+            sequence (int): the record's number within this handler.
 
         Returns:
             dict[str, Any]: the document to index.
         """
         timestamp = datetime.fromtimestamp(record.created, timezone.utc)
-        doc: dict[str, Any] = {
-            "@timestamp": timestamp.isoformat(),
+        fields: dict[str, Any] = {
+            "@timestamp": timestamp.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            ),
             "message": record.getMessage(),
-            "levelname": record.levelname,
-            "name": record.name,
+            "log": {
+                "level": record.levelname.lower(),
+                "logger": record.name,
+                "origin": {
+                    "file": {"name": record.filename, "line": record.lineno},
+                    "function": record.funcName,
+                },
+            },
+            "event": {"severity": record.levelno, "sequence": sequence},
+            "process": {
+                "pid": record.process,
+                "name": record.processName,
+                "thread": {"id": record.thread, "name": record.threadName},
+            },
+            "python": {
+                "pathname": record.pathname,
+                "task_name": getattr(record, "taskName", None),
+            },
         }
-        if record.exc_text:
-            doc["exc_text"] = record.exc_text
-        return doc
+        if isinstance(record.msg, str):
+            fields["python"]["msg"] = record.msg
+
+        exc_info = record.exc_info
+        if isinstance(exc_info, tuple) and exc_info[0] is not None:
+            fields["error"] = {
+                "type": exc_info[0].__name__,
+                "message": None if exc_info[1] is None else str(exc_info[1]),
+                "stack_trace": record.exc_text,
+            }
+        elif record.stack_info:
+            fields["error"] = {"stack_trace": record.stack_info}
+
+        # ECS keeps custom values in labels: flat, and every value a string. Keys
+        # may not contain the characters ECS reserves.
+        labels = {}
+        for key, value in vars(record).items():
+            if key in _STANDARD_RECORD_ATTRIBUTES or value is None:
+                continue
+            safe_key = key.replace(".", "_").replace("*", "_").replace("\\", "_")
+            try:
+                if isinstance(value, (dict, list, tuple)):
+                    labels[safe_key] = json.dumps(value, default=str)
+                else:
+                    labels[safe_key] = str(value)
+            except Exception:
+                labels[safe_key] = "<unprintable>"
+        if labels:
+            fields["labels"] = labels
+
+        document = copy.deepcopy(self._static_document)
+        _deep_merge(document, fields)
+        return _without_empty(document)
 
     def _ensure_index(self, index: str) -> bool:
         """Create the index if it does not exist yet.

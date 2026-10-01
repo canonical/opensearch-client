@@ -11,6 +11,9 @@ functional tests. These tests cover what the handler adds on top.
 import contextlib
 import json
 import logging
+import os
+import platform
+import socket
 import sys
 import threading
 import time
@@ -168,8 +171,12 @@ def _item_failure(status: int, error_type: str) -> OpensearchResult[Any]:
     return Success({"errors": True, "items": [item]})
 
 
-def _record(message: str) -> logging.LogRecord:
-    return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
+def _record(message: str, extra: dict[str, Any] | None = None) -> logging.LogRecord:
+    """A record as a logger makes it, with ``extra=`` attributes if given."""
+    logger = logging.getLogger("test")
+    return logger.makeRecord(
+        "test", logging.INFO, __file__, 1, message, (), None, None, extra
+    )
 
 
 def _emit_all_then_signal(
@@ -182,8 +189,8 @@ def _emit_all_then_signal(
     emitted.set()
 
 
-def test_emit_queues_plain_documents_and_contains_bad_records() -> None:
-    """Good records become plain documents; a bad one is reported and skipped."""
+def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
+    """An exception record becomes an ECS document; a bad one is reported."""
     cluster = FakeCluster()
     handler = ErrorRecordingHandler(
         OpensearchClient(cluster), "logs", flush_interval=3600.0
@@ -209,11 +216,86 @@ def test_emit_queues_plain_documents_and_contains_bad_records() -> None:
         assert len(cluster.documents) == 1
         document = cluster.documents[0]
         assert document["message"] == "got text and 3"
-        assert document["levelname"] == "ERROR"
-        assert document["name"] == "test"
-        assert "ValueError: bad value" in document["exc_text"]
+        assert document["log"]["level"] == "error"
+        assert document["log"]["logger"] == "test"
+        assert document["event"]["severity"] == logging.ERROR
+        assert document["error"]["type"] == "ValueError"
+        assert document["error"]["message"] == "bad value"
+        assert "ValueError: bad value" in document["error"]["stack_trace"]
         assert "args" not in document
         assert "exc_info" not in document
+
+
+def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
+    """Shared identity, extras and extra_fields end up in every document."""
+    cluster = FakeCluster()
+    extra_fields = {"service": {"version": "1.2"}, "labels": {"env": "test"}}
+    handler = _handler(cluster, service_name="superset", extra_fields=extra_fields)
+    extra = {"collector": "superset", "batch.size": 3, "skipped": None}
+    first = _record("one", extra)
+    first.created = 1_700_000_000.123456
+    second = _record("two")
+    second.stack_info = "Stack (most recent call last):\n  File x, line 1"
+
+    with _running(handler):
+        handler.emit(first)
+        handler.emit(second)
+        handler.flush()
+
+        first_document, second_document = cluster.documents
+        assert first_document["@timestamp"] == "2023-11-14T22:13:20.123Z"
+        assert first_document["ecs"] == {"version": "9.0"}
+        assert first_document["host"] == {"name": socket.gethostname()}
+        assert first_document["agent"]["type"] == "osclient"
+        # extra_fields are merged into service, not a replacement for it.
+        service = first_document["service"]
+        assert service["name"] == "superset"
+        assert service["version"] == "1.2"
+        assert service["ephemeral_id"] == second_document["service"]["ephemeral_id"]
+        assert first_document["event"] == {
+            "dataset": "superset",
+            "severity": logging.INFO,
+            "sequence": 1,
+        }
+        assert second_document["event"]["sequence"] == 2
+        assert first_document["labels"] == {
+            "env": "test",
+            "collector": "superset",
+            "batch_size": "3",
+        }
+        assert first_document["python"] == {"msg": "one", "pathname": __file__}
+        assert "error" not in first_document
+        # stack_info alone is reported as a stack trace, with no exception type.
+        assert second_document["error"] == {"stack_trace": second.stack_info}
+        # Nothing from the first record carries over into the second.
+        assert second_document["labels"] == {"env": "test"}
+
+
+def test_system_details_are_opt_in_and_service_name_has_a_default() -> None:
+    """OS and process details are added only on request."""
+    plain_cluster = FakeCluster()
+    detailed_cluster = FakeCluster()
+    plain = _handler(plain_cluster)
+    detailed = _handler(detailed_cluster, include_system_details=True)
+
+    with _running(plain), _running(detailed):
+        plain.emit(_record("one"))
+        plain.flush()
+        detailed.emit(_record("one"))
+        detailed.flush()
+
+    plain_document = plain_cluster.documents[0]
+    detailed_document = detailed_cluster.documents[0]
+    # With no service_name the name comes from the running program.
+    assert plain_document["service"]["name"]
+    assert plain_document["event"]["dataset"] == plain_document["service"]["name"]
+    assert set(plain_document["process"]) == {"pid", "name", "thread"}
+    assert set(plain_document["host"]) == {"name"}
+    assert detailed_document["host"]["architecture"] == platform.machine()
+    assert detailed_document["host"]["os"]["name"]
+    assert detailed_document["process"]["executable"] == sys.executable
+    assert detailed_document["process"]["parent"] == {"pid": os.getppid()}
+    assert detailed_document["process"]["working_directory"] == os.getcwd()
 
 
 def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
@@ -240,6 +322,8 @@ def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
             "c",
             "d",
         ]
+        # The dropped record "b" was number 2, so the gap shows the loss.
+        assert [d["event"]["sequence"] for d in cluster.documents] == [1, 3, 4]
         assert handler.dropped == 1
 
 
