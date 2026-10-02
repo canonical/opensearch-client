@@ -13,11 +13,13 @@ the variables, runs these tests, and tears everything down.
 import contextlib
 import os
 import uuid
+from collections.abc import Generator
 from typing import Iterator
 
 import pytest
 
 from opensearch_client import OpensearchClient, triage
+from opensearch_client import client as bulk_module
 from opensearch_client.config import client_from_env
 
 if not (
@@ -76,6 +78,37 @@ def _temporary_component_template(name: str) -> Iterator[None]:
 
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _block_writes(index: str, blocked: bool) -> None:
+    """Block or unblock writes to the index, as a full disk would."""
+    settings = {"index.blocks.write": blocked}
+    assert _client.request("PUT", f"{index}/_settings", settings).ok
+
+
+class _SleepRecorder:
+    """Stands in for ``sleep``: records each delay, and can unblock writes midway."""
+
+    def __init__(self, index: str, unblock_on_call: int | None = None) -> None:
+        self.index = index
+        self.unblock_on_call = unblock_on_call
+        self.delays: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.delays.append(seconds)
+        if len(self.delays) == self.unblock_on_call:
+            _block_writes(self.index, False)
+
+
+@contextlib.contextmanager
+def _sleep_replaced(recorder: _SleepRecorder) -> Generator[None]:
+    """Make ``bulk`` call the recorder instead of really waiting."""
+    original = bulk_module.sleep
+    setattr(bulk_module, "sleep", recorder)
+    try:
+        yield
+    finally:
+        setattr(bulk_module, "sleep", original)
 
 
 def test_index_and_read_back() -> None:
@@ -194,7 +227,7 @@ def test_bulk_indexes_documents_across_batches() -> None:
         assert [row["name"] for row in rows.data] == ["host-7"]
 
 
-def test_bulk_reports_a_rejected_document() -> None:
+def test_bulk_reports_rejected_documents_and_retries_only_transient_ones() -> None:
     index = _unique("opensearch_client-func-bulk-reject")
     with _temporary_indices(index):
         assert _client.create_index(
@@ -215,6 +248,33 @@ def test_bulk_reports_a_rejected_document() -> None:
         assert failures[0]["document"] == {"n": "not-an-int"}
         assert failures[0]["status"] >= 400
         assert failures[0]["error"] is not None
+
+        # A rejected document is a permanent failure: even with retries allowed it
+        # is sent once and bulk never waits.
+        recorder = _SleepRecorder(index)
+        with _sleep_replaced(recorder):
+            permanent = _client.bulk([{"n": "not-an-int"}], index=index, max_retries=3)
+        assert not permanent
+        assert permanent.data["batches"] == 1
+        assert recorder.delays == []
+
+        # A write-blocked index fails every item with a 403 cluster_block_exception.
+        # The status alone looks permanent, but the error type marks it transient
+        # (the block can be lifted), so bulk retries, doubling the delay up to a
+        # minute. The block is lifted before the last retry, which then succeeds.
+        _block_writes(index, True)
+        recorder = _SleepRecorder(index, unblock_on_call=8)
+        with _sleep_replaced(recorder):
+            recovered = _client.bulk([{"n": 4}], index=index, max_retries=8)
+        assert recovered, recovered.reason
+        assert recovered.data["batches"] == 9  # the first send and eight retries
+        assert recorder.delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+
+        # Two documents from the first call, and the retried one written once.
+        assert _client.refresh(index=index).ok
+        count = _client.count({"match_all": {}}, index=index)
+        assert count
+        assert count.data == 3
 
 
 def test_index_template_pins_a_field_type_before_the_first_document() -> None:
