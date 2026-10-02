@@ -3,9 +3,12 @@
 
 """Unit tests for opensearch_client.client.OpensearchClient."""
 
+import contextlib
 import json
+from collections.abc import Generator
 from typing import Any
 
+from opensearch_client import client as client_module
 from opensearch_client.client import (
     DEFAULT_INDEX,
     BulkItem,
@@ -37,16 +40,45 @@ class FakeTransport:
 class _SeqTransport:
     """A transport returning queued results in order (the last repeats).
 
-    Counts the calls.
+    Counts the calls and keeps the body of every request.
     """
 
     def __init__(self, *results: OpensearchResult[Any]) -> None:
         self._results = results
         self.calls = 0
+        self.bodies: list[bytes | None] = []
 
-    def request(self, *_: Any, **__: Any) -> OpensearchResult[Any]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
         self.calls += 1
+        self.bodies.append(body)
         return self._results[min(self.calls - 1, len(self._results) - 1)]
+
+
+@contextlib.contextmanager
+def _recorded_delays() -> Generator[list[float]]:
+    """Make ``bulk`` record the delays it asks for instead of waiting."""
+    delays: list[float] = []
+    original = client_module.sleep
+    setattr(client_module, "sleep", delays.append)
+    try:
+        yield delays
+    finally:
+        setattr(client_module, "sleep", original)
+
+
+def _item_error(status: int, error_type: str | None = None) -> OpensearchResult[Any]:
+    """A 200 bulk response in which the only document failed."""
+    outcome: dict[str, Any] = {"status": status}
+    if error_type is not None:
+        outcome["error"] = {"type": error_type}
+    return Success({"errors": True, "items": [{"index": outcome}]})
 
 
 def test_request_delegates_to_the_transport() -> None:
@@ -156,5 +188,92 @@ def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
     transport = _SeqTransport(
         Failure("503 unavailable", status=503)
     )  # every attempt fails
-    res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
+    with _recorded_delays():
+        res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
     assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries
+
+
+def test_bulk_waits_longer_before_each_retry_up_to_a_minute() -> None:
+    down = Failure("503 unavailable", status=503)
+    ok = Success({"items": [{"index": {"status": 201}}]})
+
+    # Every attempt fails: one wait before each of the eight retries, doubling
+    # from a second and capped at a minute, and none after the last attempt.
+    transport = _SeqTransport(down)
+    with _recorded_delays() as delays:
+        result = OpensearchClient(transport).bulk([{"a": 1}], max_retries=8)
+    assert not result
+    assert transport.calls == 9
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+
+    # The waiting stops as soon as a retry succeeds.
+    transport = _SeqTransport(down, down, ok)
+    with _recorded_delays() as delays:
+        result = OpensearchClient(transport).bulk([{"a": 1}], max_retries=8)
+    assert result
+    assert transport.calls == 3
+    assert delays == [1.0, 2.0]
+
+
+def test_bulk_retries_only_transient_failures() -> None:
+    # (what failed, whether bulk should retry it)
+    cases: list[tuple[str, OpensearchResult[Any], bool]] = [
+        ("no response", Failure("unreachable", status=None), True),
+        ("503 unavailable", Failure("unavailable", status=503), True),
+        ("418, a status that is not listed", Failure("teapot", status=418), True),
+        ("400 bad request", Failure("bad request", status=400), False),
+        ("413 on a single document", Failure("too large", status=413), False),
+        ("item 400 with no error type", _item_error(400), False),
+        # A listed error type beats the status in both directions.
+        (
+            "item 403 cluster_block_exception",
+            _item_error(403, "cluster_block_exception"),
+            True,
+        ),
+        (
+            "item 404 index_not_found_exception",
+            _item_error(404, "index_not_found_exception"),
+            True,
+        ),
+        (
+            "item 503 mapper_parsing_exception",
+            _item_error(503, "mapper_parsing_exception"),
+            False,
+        ),
+    ]
+
+    for label, response, retried in cases:
+        transport = _SeqTransport(response)
+        with _recorded_delays() as delays:
+            result = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
+        assert not result, label
+        assert result.data["failed"] == 1, label
+        assert transport.calls == (3 if retried else 1), label
+        assert delays == ([1.0, 2.0] if retried else []), label
+
+    # Only the transient document of a mixed batch is sent again, and the
+    # permanent one is still reported as failed.
+    permanent = {"name": "permanent"}
+    transient = {"name": "transient"}
+    rejected = {"type": "mapper_parsing_exception"}
+    first_pass = Success(
+        {
+            "errors": True,
+            "items": [
+                {"index": {"status": 400, "error": rejected}},
+                {"index": {"status": 503}},
+            ],
+        }
+    )
+    second_pass = Success({"items": [{"index": {"status": 201}}]})
+    transport = _SeqTransport(first_pass, second_pass)
+    with _recorded_delays():
+        result = OpensearchClient(transport).bulk([permanent, transient])
+    assert not result
+    assert result.data["indexed"] == 1
+    assert [failure["document"] for failure in result.data["failures"]] == [permanent]
+    assert transport.calls == 2
+    resent = transport.bodies[1]
+    assert resent is not None
+    assert b"transient" in resent
+    assert b"permanent" not in resent
