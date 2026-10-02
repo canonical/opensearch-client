@@ -22,6 +22,10 @@ BULK_MAX_BYTES = 10_000_000
 BULK_RETRY_BASE_DELAY = 1.0
 BULK_RETRY_MAX_DELAY = 60.0
 
+# Error type classification for ``bulk``
+TRANSIENT_ERRORS = []
+PERMANENT_ERRORS = []
+
 
 class BulkItem(NamedTuple):
     """A document's encoded NDJSON lines, plus the source kept for failure reports.
@@ -104,20 +108,6 @@ def _tally_bulk_items(
             summary["indexed"] += 1
         else:
             failures.append((item, {"status": outcome.get("status"), "error": error}))
-
-
-def _retry_delay(retry: int) -> float:
-    """Return the seconds to wait before a bulk retry.
-
-    Args:
-        retry (int): which retry this is, counting from 0 for the first.
-
-    Returns:
-        float: ``BULK_RETRY_BASE_DELAY`` doubled for each earlier retry, capped at
-            ``BULK_RETRY_MAX_DELAY``.
-    """
-    # Capping the exponent keeps a huge retry count from overflowing the float.
-    return min(BULK_RETRY_BASE_DELAY * 2 ** min(retry, 32), BULK_RETRY_MAX_DELAY)
 
 
 def _query_string(params: dict[str, Any]) -> str:
@@ -451,13 +441,15 @@ class OpensearchClient:
         }
 
         failures = self._send_bulk(pending, max_bytes, action, summary)
-        for retry in range(max_retries):
+        retry_delay = BULK_RETRY_BASE_DELAY
+        for _ in range(max_retries):
             if not failures:
                 break
-            sleep(_retry_delay(retry))
+            sleep(retry_delay)
             failures = self._send_bulk(
                 [item for item, _ in failures], max_bytes, action, summary
             )
+            retry_delay = min(retry_delay * 2, BULK_RETRY_MAX_DELAY)
 
         for item, info in failures:
             summary["failed"] += 1
