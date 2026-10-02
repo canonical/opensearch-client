@@ -99,8 +99,9 @@ class OpensearchHandler(logging.Handler):
 
     ``emit`` only queues a record. A background thread sends the queue with
     ``OpensearchClient.bulk`` every ``flush_interval`` seconds, or as soon as
-    ``buffer_size`` records are waiting, so ``emit`` never blocks on the network.
-    If more than ``max_queue`` records are waiting, the oldest are dropped.
+    ``flush_threshold`` records are waiting, so ``emit`` never blocks on the
+    network. If more than ``buffer_limit`` records are waiting, the oldest are
+    dropped.
 
     ``OpensearchClient.bulk`` sends documents that fail to index twice more. If
     they still fail for a temporary reason (the cluster is unreachable,
@@ -123,9 +124,9 @@ class OpensearchHandler(logging.Handler):
         index: str,
         *,
         level: int = logging.NOTSET,
-        buffer_size: int = 1000,
+        flush_threshold: int = 1000,
         flush_interval: float = 5.0,
-        max_queue: int = 10000,
+        buffer_limit: int = 10000,
         service_name: str | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
@@ -135,10 +136,13 @@ class OpensearchHandler(logging.Handler):
             client (OpensearchClient): the client used to index documents.
             index (str): the base index name records are written to.
             level (int): the minimum level the handler accepts.
-            buffer_size (int): flush as soon as this many records are queued.
+            flush_threshold (int): flush as soon as this many records are
+                queued. The buffer can grow past this while a send is running
+                or failing, up to ``buffer_limit``.
             flush_interval (float): flush at least this often, in seconds.
-            max_queue (int): the most records held in memory; beyond this the
-                oldest are dropped and counted in ``dropped``.
+            buffer_limit (int): the most records held in the buffer; beyond this
+                the oldest are dropped and counted in ``dropped``. Keep it at
+                or above ``flush_threshold``.
             service_name (str | None): the ECS ``service.name`` of every document,
                 for example the syslog tag the collector sends events under, so
                 logs and events can be matched. Defaults to the name of the
@@ -163,8 +167,8 @@ class OpensearchHandler(logging.Handler):
 
         # Configure the buffer
         self._buffer: deque[dict[str, Any]] = deque()
-        self.buffer_size = buffer_size
-        self.max_queue = max_queue
+        self.flush_threshold = flush_threshold
+        self.buffer_limit = buffer_limit
         self._dropped = 0
         # True after a send failed and its records were kept. While set, a full
         # buffer no longer wakes the flush thread, so it retries once per interval
@@ -206,8 +210,8 @@ class OpensearchHandler(logging.Handler):
 
             with self._lock:
                 self._buffer.append(doc)
-                self._drop_oldest_beyond_max_queue()
-                full = len(self._buffer) >= self.buffer_size
+                self._drop_oldest_beyond_buffer_limit()
+                full = len(self._buffer) >= self.flush_threshold
                 wake = full and not self._backing_off
             if wake:
                 self._wake_event.set()
@@ -469,14 +473,14 @@ class OpensearchHandler(logging.Handler):
         with self._lock:
             self._dropped += rejected
             self._buffer.extendleft(reversed(kept))
-            self._drop_oldest_beyond_max_queue()
+            self._drop_oldest_beyond_buffer_limit()
             self._backing_off = bool(kept)
 
-    def _drop_oldest_beyond_max_queue(self) -> None:
-        """Drop the oldest queued records while more than ``max_queue`` wait.
+    def _drop_oldest_beyond_buffer_limit(self) -> None:
+        """Drop the oldest queued records while more than ``buffer_limit`` wait.
 
         The caller must hold the lock.
         """
-        while len(self._buffer) > self.max_queue:
+        while len(self._buffer) > self.buffer_limit:
             self._buffer.popleft()
             self._dropped += 1

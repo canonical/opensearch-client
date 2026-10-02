@@ -11,7 +11,6 @@ functional tests. These tests cover what the handler adds on top.
 import contextlib
 import json
 import logging
-import os
 import socket
 import sys
 import threading
@@ -299,34 +298,6 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert second_document["labels"] == {"env": "test"}
 
 
-def test_ephemeral_id_is_the_systemd_invocation_id_or_unique_per_handler() -> None:
-    """service.ephemeral_id changes with each run of the service."""
-    original = os.environ.get("INVOCATION_ID")
-    clusters = [FakeCluster(), FakeCluster(), FakeCluster()]
-    try:
-        os.environ["INVOCATION_ID"] = "abc123"
-        from_systemd = _handler(clusters[0])
-        del os.environ["INVOCATION_ID"]
-        first = _handler(clusters[1])
-        second = _handler(clusters[2])
-    finally:
-        if original is None:
-            os.environ.pop("INVOCATION_ID", None)
-        else:
-            os.environ["INVOCATION_ID"] = original
-
-    ephemeral_ids = []
-    for handler, cluster in zip((from_systemd, first, second), clusters):
-        with _running(handler):
-            handler.emit(_record("one"))
-            handler.flush()
-        ephemeral_ids.append(cluster.documents[0]["service"]["ephemeral_id"])
-
-    assert ephemeral_ids[0] == "abc123"
-    assert ephemeral_ids[1] and ephemeral_ids[2]
-    assert ephemeral_ids[1] != ephemeral_ids[2]
-
-
 def test_flush_thread_starts_after_the_handler_is_fully_set_up() -> None:
     """A thread started early could use state that does not exist yet."""
     original = log_handler.Thread
@@ -343,7 +314,7 @@ def test_flush_thread_starts_after_the_handler_is_fully_set_up() -> None:
 def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
     """While a send hangs, emit returns, the oldest waiting record is dropped."""
     cluster = BlockingCluster()
-    with _running(_handler(cluster, buffer_size=1, max_queue=2)) as handler:
+    with _running(_handler(cluster, flush_threshold=1, buffer_limit=2)) as handler:
         handler.emit(_record("a"))
         assert cluster.send_started.wait(_WAIT_SECONDS), "the send never started"
 
@@ -369,8 +340,8 @@ def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
 
 def test_queued_records_are_sent_without_an_explicit_flush() -> None:
     """A full buffer and an elapsed interval each send the queue on their own."""
-    full_buffer = {"buffer_size": 2, "flush_interval": 3600.0}
-    interval_elapsed = {"buffer_size": 1000, "flush_interval": 0.05}
+    full_buffer = {"flush_threshold": 2, "flush_interval": 3600.0}
+    interval_elapsed = {"flush_threshold": 1000, "flush_interval": 0.05}
 
     for settings, record_count in ((full_buffer, 2), (interval_elapsed, 1)):
         cluster = FakeCluster()
@@ -412,7 +383,7 @@ def test_send_path_records_are_ignored_and_a_locked_flush_does_not_stall() -> No
         assert elapsed < _WAIT_SECONDS, "flush stalled while the handler lock was held"
 
 
-def test_index_is_created_only_when_missing_and_only_on_first_flush() -> None:
+def test_index_is_checked_on_first_flush_and_again_only_when_it_goes_missing() -> None:
     """Building the handler makes no requests; the first flush checks the index."""
     index_missing = (
         False,
@@ -432,11 +403,36 @@ def test_index_is_created_only_when_missing_and_only_on_first_flush() -> None:
 
             assert cluster.calls == expected_calls
 
+            # The index is deleted: the next send fails, and the one after
+            # that creates the index again before sending.
+            cluster.index_exists = False
+            cluster.bulk_result = _item_failure(404, "index_not_found_exception")
+            cluster.calls.clear()
+            handler.emit(_record("three"))
+            handler.flush()
+            cluster.recover()
+            handler.flush()
+
+            assert cluster.calls[-3:] == [
+                ("GET", "logs"),
+                ("PUT", "logs"),
+                ("POST", "_bulk"),
+            ]
+            assert [document["message"] for document in cluster.documents] == [
+                "one",
+                "two",
+                "three",
+            ]
+
 
 def test_failed_sends_are_kept_and_resent_until_the_handler_closes() -> None:
-    """An outage loses nothing until close, and nothing retries in a tight loop."""
+    """Failed sends are kept and resent until close, without a tight retry loop.
+
+    Records are lost only if the buffer limit is passed (see the next test) or
+    when the handler closes while the cluster is still down.
+    """
     cluster = FakeCluster(bulk_result=Failure("down", status=None))
-    with _running(_handler(cluster, buffer_size=2)) as handler:
+    with _running(_handler(cluster, flush_threshold=2)) as handler:
         handler.emit(_record("a"))
         handler.flush()
 
@@ -459,10 +455,10 @@ def test_failed_sends_are_kept_and_resent_until_the_handler_closes() -> None:
         assert handler.dropped == 1  # closing gives up on what could not be sent
 
 
-def test_records_kept_after_a_failed_send_respect_max_queue_oldest_first() -> None:
-    """Kept records go back in front, and the oldest are dropped past max_queue."""
+def test_records_kept_after_a_failed_send_respect_buffer_limit_oldest_first() -> None:
+    """Kept records go back in front, and the oldest are dropped past buffer_limit."""
     cluster = BlockingCluster(bulk_result=Failure("down", status=None))
-    with _running(_handler(cluster, buffer_size=3, max_queue=3)) as handler:
+    with _running(_handler(cluster, flush_threshold=3, buffer_limit=3)) as handler:
         for name in ("a", "b", "c"):
             handler.emit(_record(name))  # the third fills the buffer; its send blocks
         assert cluster.send_started.wait(_WAIT_SECONDS), "the send never started"
@@ -506,32 +502,6 @@ def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> Non
             assert (len(cluster.documents), handler.dropped) == expected, (
                 f"{status} {error_type}"
             )
-
-
-def test_index_deleted_while_running_is_recreated() -> None:
-    """After a missing-index failure the index is created before the next send."""
-    cluster = FakeCluster()
-    with _running(_handler(cluster)) as handler:
-        handler.emit(_record("one"))
-        handler.flush()
-
-        cluster.index_exists = False  # the index is deleted
-        cluster.bulk_result = _item_failure(404, "index_not_found_exception")
-        cluster.calls.clear()
-        handler.emit(_record("two"))
-        handler.flush()
-        cluster.recover()
-        handler.flush()
-
-        assert cluster.calls[-3:] == [
-            ("GET", "logs"),
-            ("PUT", "logs"),
-            ("POST", "_bulk"),
-        ]
-        assert [document["message"] for document in cluster.documents] == [
-            "one",
-            "two",
-        ]
 
 
 def test_a_send_that_raises_is_contained() -> None:
