@@ -5,6 +5,7 @@
 
 import json
 from collections.abc import Iterable
+from time import sleep
 from typing import Any, NamedTuple
 
 from opensearch_client.jdbc import rows_from_sql_response
@@ -15,6 +16,11 @@ DEFAULT_INDEX = "*"
 
 # Default byte ceiling for one _bulk request body; batches are packed under it.
 BULK_MAX_BYTES = 10_000_000
+
+# Seconds ``bulk`` waits before its first retry. Each later retry waits twice as
+# long as the one before, up to BULK_RETRY_MAX_DELAY.
+BULK_RETRY_BASE_DELAY = 1.0
+BULK_RETRY_MAX_DELAY = 60.0
 
 
 class BulkItem(NamedTuple):
@@ -98,6 +104,20 @@ def _tally_bulk_items(
             summary["indexed"] += 1
         else:
             failures.append((item, {"status": outcome.get("status"), "error": error}))
+
+
+def _retry_delay(retry: int) -> float:
+    """Return the seconds to wait before a bulk retry.
+
+    Args:
+        retry (int): which retry this is, counting from 0 for the first.
+
+    Returns:
+        float: ``BULK_RETRY_BASE_DELAY`` doubled for each earlier retry, capped at
+            ``BULK_RETRY_MAX_DELAY``.
+    """
+    # Capping the exponent keeps a huge retry count from overflowing the float.
+    return min(BULK_RETRY_BASE_DELAY * 2 ** min(retry, 32), BULK_RETRY_MAX_DELAY)
 
 
 def _query_string(params: dict[str, Any]) -> str:
@@ -403,7 +423,8 @@ class OpensearchClient:
         Every 200's per-item results are inspected, so a document that failed
         inside an otherwise-2xx bulk response is not trusted as written. Any failed
         document, whether from a failed batch or a per-item error, is retried up to
-        ``max_retries`` times (``max_retries=0`` disables retries).
+        ``max_retries`` times (``max_retries=0`` disables retries). Each retry waits
+        longer than the last: 1 second, then 2, 4, 8 and so on, up to 60 seconds.
 
         Args:
             documents (Iterable[dict[str, Any]]): the documents to index.
@@ -430,9 +451,10 @@ class OpensearchClient:
         }
 
         failures = self._send_bulk(pending, max_bytes, action, summary)
-        for _ in range(max_retries):
+        for retry in range(max_retries):
             if not failures:
                 break
+            sleep(_retry_delay(retry))
             failures = self._send_bulk(
                 [item for item, _ in failures], max_bytes, action, summary
             )
