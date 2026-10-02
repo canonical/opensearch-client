@@ -47,7 +47,7 @@ _FLUSH_WAIT_SECONDS = 10.0
 # How long close() waits for the flush thread to finish its final send.
 _CLOSE_JOIN_SECONDS = 5.0
 
-# How many more times bulk() immediately resends documents that failed to index.
+# How many more times bulk() resends documents that failed to index.
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
 
