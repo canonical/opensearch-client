@@ -34,45 +34,111 @@ packages = ["src/opensearch_client"]
 #######################################
 
 [tool.tox]
-requires = ["tox>=4.57"]
-env_list = ["lint", "type", "unit"]
+requires = ["tox>=4.57", "tox-uv>=1.0.0"]
+env_list = [
+    "lint",
+    "type",
+    "hygiene",
+    "doc-checks",
+    # requires-python is >=3.10; 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
+    "unit-py310",
+    "unit-py312",
+    "unit-py314",
+]
+
+[tool.tox.env_run_base]
+package = "wheel"
+recreate = true
+set_env = { PYTHONPATH = "{tox_root}/src" }
 
 [tool.tox.env.lint]
-description = "Run lint checks"
+base_python = "py312"
+description = "Check code against coding style standards"
 allowlist_externals = ["bash"]
-skip_install = true
-recreate = true
-deps = ["ruff==0.15.20"]
+deps = [
+    "black",
+    "codespell",
+    "flake8",
+    "flake8-builtins",
+    "flake8-docstrings",
+    "flake8-docstrings-complete",
+    "flake8-pyproject",
+    "isort",
+    "pylint>=3.3.8",
+    "pytest",
+]
 commands = [
-    ["bash", "tests/lint/ascii-check.sh"],
-    ["ruff", "check", "{tox_root}/src", "{tox_root}/tests"],
-    ["ruff", "format", "--check", "{tox_root}/src", "{tox_root}/tests"],
+    ["bash", "tests/lint/ascii-check.sh", "py"],
+    ["bash", "tests/lint/ascii-check.sh", "sh"],
+    ["bash", "-c", "flake8 . || touch .fail"],
+    ["bash", "-c", "pylint -j 0 . || touch .fail"],
+    ["bash", "-c", "isort --check-only --diff . || touch .fail"],
+    ["bash", "-c", "black --check --diff . || touch .fail"],
+    ["bash", "-c", "codespell . || touch .fail"],
+    ["bash", "-c", "! test -f .fail || ( rm .fail && exit 1 )"],
 ]
 
 [tool.tox.env.fmt]
-description = "Run ruff's auto-formatter"
-allowlist_externals = ["sh"]
-skip_install = true
-recreate = true
-deps = ["ruff==0.15.20"]
+description = "Automatically format code"
+deps = ["black", "isort", "codespell"]
 commands = [
-    ["ruff", "check", "--fix", "{tox_root}/src", "{tox_root}/tests"],
-    ["ruff", "format", "{tox_root}/src", "{tox_root}/tests"],
+    ["isort", "."],
+    ["black", "."],
+    ["codespell", "-w", "."],
 ]
 
 [tool.tox.env.type]
 description = "Type-check with basedpyright"
-recreate = true
 deps = [
-  "basedpyright==1.39.9",
-  "pytest==9.1.1",
+    "basedpyright>=1.31.1",
+    "pytest",
 ]
-commands = [["basedpyright", "{tox_root}/src", "{tox_root}/tests"]]
+commands = [
+    [
+        "basedpyright",
+        "--pythonpath", "{envpython}",
+        "{tox_root}/src", "{tox_root}/tests",
+    ],
+]
 
-[tool.tox.env.unit]
-description = "Run the unit test suite"
-deps = ["pytest"]
-commands = [["pytest", "-s", "tests/unit/"]]
+[tool.tox.env.hygiene]
+description = "Check for dead code"
+deps = ["vulture"]
+commands = [["vulture"]]
+
+[tool.tox.env.doc-checks]
+description = "Run doc checks"
+package = "skip"
+allowlist_externals = ["bash"]
+deps = [
+    "mdformat",
+    "mdformat-gfm",
+    "mdformat-pyproject",
+]
+commands = [
+    ["bash", "tests/lint/ascii-check.sh", "md"],
+    ["mdformat", "--check", "README.md", "docs", "tests"],
+]
+
+[tool.tox.env_base.unit]
+factors = [["py310", "py312", "py314"]]
+description = "Run unit tests"
+deps = [
+    "coverage[toml]",
+    "pytest",
+]
+commands = [
+    [
+        "coverage",
+        "run",
+        "--source=src/opensearch_client",
+        "-m",
+        "pytest",
+        "-s",
+        "tests/unit/",
+    ],
+    ["coverage", "report"],
+]
 
 [tool.tox.env.functional]
 description = "Run functional tests against a live OpenSearch cluster (see tests/functional/)"
@@ -89,6 +155,12 @@ pass_env = [
 ]
 commands = [["pytest", "-s", "tests/functional/"]]
 
+[tool.tox.env.actionlint]
+description = "Lint GitHub Actions workflows with actionlint"
+skip_install = true
+deps = ["actionlint-py"]
+commands = [["actionlint"]]
+
 
 #######################################
 # TOOL CONFIGS                        #
@@ -96,3 +168,31 @@ commands = [["pytest", "-s", "tests/functional/"]]
 
 [tool.pyright]
 typeCheckingMode = "standard"
+
+[tool.isort]
+profile = "black"
+
+[tool.flake8]
+exclude = [".git", ".tox", ".venv", "venv", "tests", "build"]
+max-line-length = 88
+extend-ignore = ["E203", "E701"]
+
+[tool.pylint]
+ignore-paths = [".git", ".*.venv", ".*venv", ".*.tox", "build"]
+disable = [
+    "C0114", "C0116", "C0301",
+    "C0303", "C0304", "C0305",
+    "C0411", "E0401", "R0801",
+    "R0903", "C0105", "R0913",
+    "R0917", "W0511",
+]
+
+[tool.codespell]
+skip = [".venv", "venv", ".git", ".tox", ".pytest_cache"]
+
+[tool.vulture]
+paths = ["src", "tests"]
+min_confidence = 60
+
+[tool.mdformat]
+wrap = 80

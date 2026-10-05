@@ -16,7 +16,7 @@ the primary is unreachable (a transport error, not an HTTP error status from a
 reachable server), retries the same request through the fallback.
 
 Every ``request`` returns an :class:`~opensearch_client.result.OpensearchResult` rather
-than raising: a transport error, a non-ok status, or an unparseable body all come
+than raising: a transport error, a non-ok status, or an unparsable body all come
 back as ``ok=False`` with a reason.
 """
 

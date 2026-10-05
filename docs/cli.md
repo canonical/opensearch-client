@@ -1,6 +1,7 @@
 # CLI
 
-The `opensearch_client` package offers a CLI entry point, `os-cli`, with subcommands.
+The `opensearch_client` package offers a CLI entry point, `os-cli`, with
+subcommands.
 
 ## Usage
 
@@ -183,8 +184,8 @@ The lifecycle verbs cover the common index-management operations:
   pattern dry run lists exactly which indices would be deleted.
 - `rollover` rolls a write alias over to a new index, and is a dry run unless
   `--apply`: the dry run reports the new index's name without creating it.
-  `--settings SOURCE` (`@PATH`, `-`, or literal JSON) sets index settings for the
-  new index only, overriding its template, for example to give one index a
+  `--settings SOURCE` (`@PATH`, `-`, or literal JSON) sets index settings for
+  the new index only, overriding its template, for example to give one index a
   different shard count. Creating the index can take over 30 s on a slow
   cluster, so the call waits up to 120 s; if it still times out, check
   `os-cli index list` before retrying, because the rollover may have happened.
@@ -225,17 +226,17 @@ os-cli cluster set pipeline web-logs @pipeline.json
 one from `SOURCE`, and `delete template` removes one: a dry run by default,
 reporting the index patterns it covers, until `--apply` is given. Both `delete`
 commands take exactly one name; a name with a wildcard or a comma is refused,
-because either could delete several templates. `simulate
-template` resolves what putting a definition under a name would give a new
-index, without installing it, and `simulate index` resolves what the installed
-templates would give a new index. See [Index templates](library.md#index-templates)
-for how templates interact.
+because either could delete several templates. `simulate template` resolves what
+putting a definition under a name would give a new index, without installing it,
+and `simulate index` resolves what the installed templates would give a new
+index. See [Index templates](library.md#index-templates) for how templates
+interact.
 
 `component-template` shows component templates, `set component-template` creates
-or replaces one from `SOURCE`, and `delete component-template` removes one: a dry
-run by default, reporting the index templates that compose it, until `--apply`.
-Put components before the index templates that compose them, and delete them
-after.
+or replaces one from `SOURCE`, and `delete component-template` removes one: a
+dry run by default, reporting the index templates that compose it, until
+`--apply`. Put components before the index templates that compose them, and
+delete them after.
 
 ```
 os-cli cluster template

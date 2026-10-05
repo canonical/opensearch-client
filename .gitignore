@@ -1,7 +1,18 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-*.egg-info/
+**/__pycache__/
+**/.venv/
+**/venv/
+**/*.egg-info/
+**/.mypy_cache/
+**.tox/
+
 build/
 dist/
+
+*.py[cod]
+*.env.local
+
+# testing
+.coverage
+.env
+.pytest_cache/
+.reposcan/
