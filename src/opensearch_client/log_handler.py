@@ -177,6 +177,7 @@ class OpensearchHandler(logging.Handler):
         self._flush_waiters: list[Event] = []
 
         # Creates the base document with fields that are shared between all logs
+        json.dumps(extra_fields)  # Ensure JSON serializeable
         self._static_document = self._build_static_document(
             service_name, extra_fields or {}
         )
@@ -201,14 +202,20 @@ class OpensearchHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         """Queue one record for the flush thread; never block and never raise.
 
+        Once ``close`` has been called, the record is counted in ``dropped``
+        instead of queued.
+
         Args:
             record (logging.LogRecord): the record to ship.
         """
         try:
-            self.format(record)
             doc = self._format_record(record)
 
             with self._lock:
+                # Check if handler is already closed.
+                if self._stop_event.is_set():
+                    self._dropped += 1
+                    return
                 self._buffer.append(doc)
                 self._drop_oldest_beyond_buffer_limit()
                 full = len(self._buffer) >= self.flush_threshold
@@ -339,7 +346,6 @@ class OpensearchHandler(logging.Handler):
             "event": {"severity": record.levelno},
             "process": {
                 "pid": record.process,
-                "name": record.processName,
                 "thread": {"id": record.thread, "name": record.threadName},
             },
             "python": {
@@ -355,7 +361,9 @@ class OpensearchHandler(logging.Handler):
             fields["error"] = {
                 "type": exc_info[0].__name__,
                 "message": None if exc_info[1] is None else str(exc_info[1]),
-                "stack_trace": record.exc_text,
+                "stack_trace": (
+                    record.exc_text or "".join(traceback.format_exception(*exc_info))
+                ).rstrip("\n"),
             }
         elif record.stack_info:
             fields["error"] = {"stack_trace": record.stack_info}

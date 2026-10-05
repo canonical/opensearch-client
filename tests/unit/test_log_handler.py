@@ -540,3 +540,15 @@ def test_close_sends_the_remaining_records_and_stops_the_flush_thread() -> None:
     started = time.monotonic()
     handler.flush()  # logging.shutdown flushes handlers that were already closed
     assert time.monotonic() - started < _WAIT_SECONDS
+
+
+def test_a_record_emitted_after_close_is_counted_as_dropped() -> None:
+    """A closed handler no longer queues records; it counts them as dropped."""
+    cluster = FakeCluster()
+    handler = _handler(cluster)
+    handler.close()
+
+    handler.emit(_record("late"))
+
+    assert handler.dropped == 1
+    assert cluster.documents == []
