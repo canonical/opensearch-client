@@ -26,6 +26,12 @@ class Success(Generic[T]):
     For a single request, ``data`` contains response data (a processed response
     body); a multi-request operation such as ``bulk`` may store a summary here
     instead.
+
+    Attributes:
+        data: the result payload.
+        ok: always True.
+        reason: always empty.
+        status: the HTTP status code, if the call recorded one.
     """
 
     data: T
@@ -34,6 +40,11 @@ class Success(Generic[T]):
     status: int | None = None
 
     def __bool__(self) -> Literal[True]:
+        """Report success, so ``if res:`` takes the success branch.
+
+        Returns:
+            True.
+        """
         return True
 
 
@@ -47,6 +58,12 @@ class Failure:
     partial summary (e.g. ``bulk``'s). ``status`` is the HTTP status code for
     an HTTP-error failure (e.g. 413, 503), or None for a non-HTTP failure such
     as a transport error or bad JSON.
+
+    Attributes:
+        reason: why the call failed.
+        ok: always False.
+        data: the failed operation's payload, if it has one.
+        status: the HTTP status code, or None for a non-HTTP failure.
     """
 
     reason: str
@@ -55,6 +72,11 @@ class Failure:
     status: int | None = None
 
     def __bool__(self) -> Literal[False]:
+        """Report failure, so ``if res:`` takes the failure branch.
+
+        Returns:
+            False.
+        """
         return False
 
 

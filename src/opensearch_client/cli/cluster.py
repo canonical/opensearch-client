@@ -22,7 +22,11 @@ NAME = "cluster"
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register ``cluster`` and its inspection verbs."""
+    """Register ``cluster`` and its inspection verbs.
+
+    Args:
+        subparsers: the top-level subparsers action to register under.
+    """
     parser = subparsers.add_parser(
         NAME, help="cluster-level inspection and resource management"
     )
@@ -185,6 +189,13 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     SQL and PPL are both provided by the single ``opensearch-sql`` plugin, so its
     version covers both. Each lookup is independent: if one fails its error is
     recorded and the other is still returned.
+
+    Args:
+        client: the client to query.
+
+    Returns:
+        The OpenSearch versions and the plugin versions, or an ``error`` entry
+        in place of each lookup that failed.
     """
     versions: dict[str, Any] = {}
     opensearch = client.opensearch_version()
@@ -196,8 +207,13 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     return versions
 
 
-def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the chosen operation against the client."""
+def run(args: Namespace, client: OpensearchClient) -> None:  # noqa: PLR0912
+    """Run the chosen operation against the client.
+
+    Args:
+        args: the parsed command-line arguments.
+        client: the client to run the operation with.
+    """
     if args.operation == "versions":
         print(render(get_versions(client), args.format))
     elif args.operation == "pipeline":

@@ -3,9 +3,9 @@
 
 """Build an OpensearchClient from the ``OPENSEARCH_*`` environment variables.
 
-The core :class:`~opensearch_client.client.OpensearchClient` takes an explicit transport;
-this helper assembles one from the environment. Two families of connection
-variables name an endpoint:
+The core :class:`~opensearch_client.client.OpensearchClient` takes an explicit
+transport; this helper assembles one from the environment. Two families of
+connection variables name an endpoint:
 
     OPENSEARCH_URL / OPENSEARCH_HOST[:OPENSEARCH_PORT]
         an endpoint whose type (direct cluster or dashboard proxy) is unknown
@@ -58,7 +58,20 @@ def _env_flag(name: str) -> bool:
 def _endpoint(
     url_var: str, host_var: str, port_var: str, default_port: str
 ) -> str | None:
-    """A base URL from ``<url_var>``, else ``<host_var>``[:``<port_var>``], else None."""
+    """Get a base URL from the environment, or None if no endpoint is set.
+
+    The URL variable wins; otherwise the host variable (with the port variable or
+    the default port) is used to build one.
+
+    Args:
+        url_var: the name of the variable holding a full URL.
+        host_var: the name of the variable holding a host.
+        port_var: the name of the variable holding the port for the host.
+        default_port: the port to use when ``port_var`` is unset.
+
+    Returns:
+        The base URL, or None.
+    """
     url = os.environ.get(url_var)
     if url:
         return url
@@ -69,7 +82,11 @@ def _endpoint(
 
 
 def _index() -> str:
-    """The configured index pattern, or the default ``*`` with a warning."""
+    """Get the configured index pattern, or the default ``*`` with a warning.
+
+    Returns:
+        The ``OPENSEARCH_INDEX`` value, or ``*`` if it is unset.
+    """
     index = os.environ.get("OPENSEARCH_INDEX")
     if index:
         return index

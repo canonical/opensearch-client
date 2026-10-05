@@ -141,12 +141,23 @@ def _extract_json_object(text: str, start: int) -> str:
 
 
 def where_to_dsl(client: OpensearchClient, index: str, where: str) -> dict[str, Any]:
-    """Translate a SQL WHERE predicate into the OpenSearch query DSL it pushes down to.
+    """Translate a SQL WHERE predicate into the query DSL it pushes down to.
 
     Runs ``SELECT * FROM <index> WHERE <where>`` through the SQL _explain endpoint and
     extracts ``query`` from the pushed-down request. Raises if the predicate yields no
     pushed-down query (e.g. it uses SQL features computed in-engine, not pushed down).
     See docs/sql-explain.md for an example of the _explain output parsed here.
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the index the predicate is explained against.
+        where: the SQL WHERE predicate.
+
+    Returns:
+        The pushed-down query DSL.
+
+    Raises:
+        ValueError: if the explain output has no pushed-down query.
     """
     sql = f"SELECT * FROM {index} WHERE {where}"
     explain = _data(client.explain(sql))
@@ -166,7 +177,14 @@ def where_to_dsl(client: OpensearchClient, index: str, where: str) -> dict[str, 
 
 
 def _combined_query(user_query: dict[str, Any]) -> dict[str, Any]:
-    """user_query AND still-untriaged: the exact set eliminate will tag."""
+    """Combine a query with still-untriaged: the exact set eliminate will tag.
+
+    Args:
+        user_query: the query selecting the documents to eliminate.
+
+    Returns:
+        A bool filter of ``user_query`` and the untriaged sentinel.
+    """
     return {"bool": {"filter": [user_query, {"term": {"triage.layer": UNTRIAGED}}]}}
 
 
@@ -176,6 +194,14 @@ def sql_count(client: OpensearchClient, index: str, where: str) -> int:
     COUNT(*) returns a single row, so unlike collecting rows it is not subject to the
     SQL result-size limit. Used to cross-check the DSL translation. Reads the raw
     jdbc response so the single count value is taken by position, not column name.
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the index to count in.
+        where: the SQL WHERE predicate.
+
+    Returns:
+        The number of matching documents.
     """
     sql = f"SELECT COUNT(*) FROM {index} WHERE {where}"
     resp = _data(client.sql_raw(sql))
@@ -183,14 +209,33 @@ def sql_count(client: OpensearchClient, index: str, where: str) -> int:
 
 
 def dsl_count(client: OpensearchClient, index: str, query: dict[str, Any]) -> int:
-    """Count documents matching a DSL query via the _count API."""
+    """Count documents matching a DSL query via the _count API.
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the index to count in.
+        query: the query DSL.
+
+    Returns:
+        The number of matching documents.
+    """
     return _data(client.count(query, index=index))
 
 
 def sample_untriaged(
     client: OpensearchClient, index: str, user_query: dict[str, Any], size: int = 1
 ) -> list:
-    """Return up to size _source docs from the untriaged matches, for a dry-run preview."""
+    """Return up to size _source docs from the untriaged matches, for a preview.
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the index to search.
+        user_query: the query selecting the documents to eliminate.
+        size: the most documents to return.
+
+    Returns:
+        The ``_source`` of each sampled document.
+    """
     return _data(
         client.search({"size": size, "query": _combined_query(user_query)}, index=index)
     )
@@ -204,7 +249,17 @@ def _iso8601(at: datetime) -> str:
 def _tag_script(
     layer: int, where: str, explanation: str, at: datetime
 ) -> dict[str, Any]:
-    """The Painless script that stamps the triage fields for this layer."""
+    """Build the Painless script that stamps the triage fields for this layer.
+
+    Args:
+        layer: the elimination pass number.
+        where: the SQL WHERE predicate, recorded on each document.
+        explanation: the rationale, recorded on each document.
+        at: when the elimination happened.
+
+    Returns:
+        The script, with its parameters.
+    """
     return {
         "lang": "painless",
         "source": _TAG_SCRIPT,
@@ -307,7 +362,14 @@ def eliminate(
 
 
 def _restore_script(at: datetime) -> dict[str, Any]:
-    """The Painless script that records the eliminated state on history, then resets."""
+    """Build the Painless script that records the eliminated state, then resets.
+
+    Args:
+        at: when the restore happened.
+
+    Returns:
+        The script, with its parameters.
+    """
     return {
         "lang": "painless",
         "source": _RESTORE_SCRIPT,
@@ -397,6 +459,10 @@ def _deep_merge(into: dict[str, Any], other: dict[str, Any]) -> None:
     Nested dicts are merged; on a leaf conflict the later value wins. Source
     indices sharing a template have identical types, so conflicts are not expected
     in practice.
+
+    Args:
+        into: the dict to update.
+        other: the dict to merge in.
     """
     for key, value in other.items():
         if key in into and isinstance(into[key], dict) and isinstance(value, dict):
@@ -412,6 +478,13 @@ def dest_properties(client: OpensearchClient, source: str) -> dict[str, Any]:
     are merged. Dynamic templates and other mapping settings are intentionally not
     copied: only explicit field types are carried over, which is what SQL and the
     dashboard need for the copied logs.
+
+    Args:
+        client: the client used to reach the cluster.
+        source: the source index or pattern.
+
+    Returns:
+        The merged source properties, plus the triage fields.
     """
     resp = _data(client.get_mapping(source))
     merged: dict[str, Any] = {}
@@ -433,7 +506,16 @@ _REINDEX_SCRIPT = {
 def _await_task(
     client: OpensearchClient, task_id: str, poll_seconds: float = 2
 ) -> dict[str, Any]:
-    """Poll _tasks/<task_id> until the task completes and return its final document."""
+    """Poll _tasks/<task_id> until the task completes and return its final document.
+
+    Args:
+        client: the client used to reach the cluster.
+        task_id: the task to poll.
+        poll_seconds: how long to wait between polls.
+
+    Returns:
+        The completed task document.
+    """
     while True:
         resp = _data(client.get_task(task_id))
         if resp.get("completed"):
@@ -453,6 +535,16 @@ def init(
     The reindex runs asynchronously (so a large copy does not hit a request
     timeout) and this polls the task to completion before returning a summary. dest
     must not already exist; creating it will fail loudly if it does.
+
+    Args:
+        client: the client used to reach the cluster.
+        source: the index or pattern to copy.
+        dest: the new index to copy into.
+        poll_seconds: how long to wait between polls of the reindex task.
+
+    Returns:
+        A summary mapping: source, destination, document total, tagged count and
+        failures.
     """
     properties = dest_properties(client, source)
     _data(client.create_index({"mappings": {"properties": properties}}, index=dest))
@@ -489,6 +581,13 @@ def status(client: OpensearchClient, index: str) -> dict[str, Any]:
     (``triage.layer == -1``), the number eliminated (any layer >= 1) broken down
     per layer, and any documents missing the field entirely (which should be zero
     once the index has been through init).
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the triage index.
+
+    Returns:
+        The totals and per-layer counts.
     """
     body = {
         "size": 0,
@@ -519,7 +618,15 @@ def status(client: OpensearchClient, index: str) -> dict[str, Any]:
 
 
 def next_layer(client: OpensearchClient, index: str) -> int:
-    """The next elimination layer to use: one past the highest already used, else 1."""
+    """Get the next elimination layer: one past the highest already used, else 1.
+
+    Args:
+        client: the client used to reach the cluster.
+        index: the triage index.
+
+    Returns:
+        The next layer number.
+    """
     used = status(client, index)["eliminated_by_layer"]
     return max(used) + 1 if used else 1
 
@@ -530,16 +637,35 @@ def run(args: Namespace, client: OpensearchClient) -> OpensearchResult[dict[str,
     Any failure (a failed OpenSearch call surfaced as TriageError, or a predicate
     that cannot be tagged safely) is caught here and returned as ``ok=False`` with
     a reason, so the caller never handles a raised exception.
+
+    Args:
+        args: the parsed command-line arguments.
+        client: the client used to reach the cluster.
+
+    Returns:
+        The subcommand's summary mapping, or a failure.
     """
     try:
         data = _dispatch(args, client)
-    except Exception as e:  # noqa: BLE001 -- boundary: translate to a result value
+    # Boundary: translate any exception to a result value.
+    except Exception as e:  # noqa: BLE001
         return Failure(str(e))
     return Success(data)
 
 
 def _dispatch(args: Namespace, client: OpensearchClient) -> dict[str, Any]:
-    """Run the chosen subcommand, returning its summary (may raise)."""
+    """Run the chosen subcommand, returning its summary (may raise).
+
+    Args:
+        args: the parsed command-line arguments.
+        client: the client used to reach the cluster.
+
+    Returns:
+        The subcommand's summary mapping.
+
+    Raises:
+        ValueError: if the command is unknown.
+    """
     if args.command == "init":
         return init(client, args.source, args.dest)
     if args.command == "status":

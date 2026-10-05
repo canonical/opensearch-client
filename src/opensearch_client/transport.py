@@ -47,7 +47,17 @@ class Transport(Protocol):
         body: bytes | None = ...,
         content_type: str = ...,
         timeout: int = ...,
-    ) -> OpensearchResult[Any]: ...
+    ) -> OpensearchResult[Any]:
+        """Send a request and return the decoded response body, or a failure.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+        """
+        ...
 
 
 def _result_from_response(
@@ -71,7 +81,7 @@ def _result_from_response(
 
 
 def _headers(body: bytes | None, content_type: str) -> dict[str, str]:
-    """The Content-Type header for a request, only when it carries a body."""
+    """Build the Content-Type header for a request, only if it carries a body."""
     return {"Content-Type": content_type} if body is not None else {}
 
 
@@ -87,6 +97,14 @@ class _HttpTransport:
     def __init__(
         self, base_url: str, auth: tuple[str, str], verify: bool | str
     ) -> None:
+        """Create the transport.
+
+        Args:
+            base_url: the endpoint URL.
+            auth: the username and password.
+            verify: True to verify the server certificate, False to skip it, or
+                the path to a CA bundle.
+        """
         self.base_url = base_url.rstrip("/")
         self.verify = verify
         self.session = requests.Session()
@@ -100,6 +118,18 @@ class _HttpTransport:
         content_type: str,
         timeout: int,
     ) -> requests.Response:
+        """Perform the HTTP call; implemented by each subclass.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Raises:
+            NotImplementedError: always, until a subclass implements it.
+        """
         raise NotImplementedError
 
     def request(
@@ -110,6 +140,18 @@ class _HttpTransport:
         content_type: str = "application/json",
         timeout: int = REQUEST_TIMEOUT,
     ) -> OpensearchResult[Any]:
+        """Send a request and return the outcome as a result.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Returns:
+            The decoded response body, or a failure.
+        """
         try:
             response = self.send(method, path, body, content_type, timeout)
         except requests.RequestException as e:
@@ -128,6 +170,18 @@ class DirectTransport(_HttpTransport):
         content_type: str,
         timeout: int,
     ) -> requests.Response:
+        """Perform the HTTP call; a transport error raises RequestException.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Returns:
+            The HTTP response.
+        """
         return self.session.request(
             method,
             f"{self.base_url}/{path}",
@@ -148,6 +202,14 @@ class ProxyTransport(_HttpTransport):
     def __init__(
         self, base_url: str, auth: tuple[str, str], verify: bool | str
     ) -> None:
+        """Create the transport.
+
+        Args:
+            base_url: the endpoint URL.
+            auth: the username and password.
+            verify: True to verify the server certificate, False to skip it, or
+                the path to a CA bundle.
+        """
         super().__init__(base_url, auth, verify)
         self.session.headers.update({"osd-xsrf": "true"})
 
@@ -159,6 +221,18 @@ class ProxyTransport(_HttpTransport):
         content_type: str,
         timeout: int,
     ) -> requests.Response:
+        """Perform the HTTP call; a transport error raises RequestException.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Returns:
+            The HTTP response.
+        """
         return self.session.post(
             f"{self.base_url}{PROXY_PATH}",
             params={"path": path, "method": method},
@@ -180,6 +254,12 @@ class FailoverTransport:
     """
 
     def __init__(self, primary: _HttpTransport, fallback: _HttpTransport) -> None:
+        """Create the transport.
+
+        Args:
+            primary: the transport tried first.
+            fallback: the transport tried when the primary is unreachable.
+        """
         self.primary = primary
         self.fallback = fallback
 
@@ -191,6 +271,18 @@ class FailoverTransport:
         content_type: str = "application/json",
         timeout: int = REQUEST_TIMEOUT,
     ) -> OpensearchResult[Any]:
+        """Send a request and return the outcome as a result.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Returns:
+            The decoded response body, or a failure.
+        """
         try:
             response = self.primary.send(method, path, body, content_type, timeout)
         except requests.RequestException as primary_error:
@@ -224,6 +316,12 @@ class ProbeTransport:
     """
 
     def __init__(self, direct: _HttpTransport, proxy: _HttpTransport) -> None:
+        """Create the transport.
+
+        Args:
+            direct: the transport for a direct cluster endpoint.
+            proxy: the transport for a dashboard proxy at the same endpoint.
+        """
         self.direct = direct
         self.proxy = proxy
         self._chosen: _HttpTransport | None = None
@@ -236,6 +334,18 @@ class ProbeTransport:
         content_type: str = "application/json",
         timeout: int = REQUEST_TIMEOUT,
     ) -> OpensearchResult[Any]:
+        """Send a request and return the outcome as a result.
+
+        Args:
+            method: the HTTP method.
+            path: the OpenSearch path, without a leading slash.
+            body: the encoded request body, if any.
+            content_type: the Content-Type header to send with a body.
+            timeout: the request timeout in seconds.
+
+        Returns:
+            The decoded response body, or a failure.
+        """
         if self._chosen is not None:
             return self._chosen.request(method, path, body, content_type, timeout)
 

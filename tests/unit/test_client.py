@@ -7,8 +7,8 @@ import json
 from typing import Any
 
 from opensearch_client.client import (
-    BulkItem,
     DEFAULT_INDEX,
+    BulkItem,
     OpensearchClient,
     _pack_batches,
 )

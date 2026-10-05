@@ -55,35 +55,30 @@ set_env = { PYTHONPATH = "{tox_root}/src" }
 base_python = "py312"
 description = "Check code against coding style standards"
 allowlist_externals = ["bash"]
+skip_install = true
 deps = [
-    "black",
+    "ruff==0.15.20",
     "codespell",
-    "flake8",
-    "flake8-builtins",
-    "flake8-docstrings",
-    "flake8-docstrings-complete",
-    "flake8-pyproject",
-    "isort",
-    "pylint>=3.3.8",
-    "pytest",
 ]
 commands = [
     ["bash", "tests/lint/ascii-check.sh", "py"],
     ["bash", "tests/lint/ascii-check.sh", "sh"],
-    ["bash", "-c", "flake8 . || touch .fail"],
-    ["bash", "-c", "pylint -j 0 . || touch .fail"],
-    ["bash", "-c", "isort --check-only --diff . || touch .fail"],
-    ["bash", "-c", "black --check --diff . || touch .fail"],
+    ["bash", "-c", "ruff check src tests || touch .fail"],
+    ["bash", "-c", "ruff format --check src tests || touch .fail"],
     ["bash", "-c", "codespell . || touch .fail"],
     ["bash", "-c", "! test -f .fail || ( rm .fail && exit 1 )"],
 ]
 
 [tool.tox.env.fmt]
 description = "Automatically format code"
-deps = ["black", "isort", "codespell"]
+skip_install = true
+deps = [
+    "ruff==0.15.20",
+    "codespell",
+]
 commands = [
-    ["isort", "."],
-    ["black", "."],
+    ["ruff", "check", "--fix", "src", "tests"],
+    ["ruff", "format", "src", "tests"],
     ["codespell", "-w", "."],
 ]
 
@@ -169,26 +164,24 @@ commands = [["actionlint"]]
 [tool.pyright]
 typeCheckingMode = "standard"
 
-[tool.isort]
-profile = "black"
+[tool.ruff]
+line-length = 88
 
-[tool.flake8]
-exclude = [".git", ".tox", ".venv", "venv", "tests", "build"]
-max-line-length = 88
-extend-ignore = ["E203", "E701"]
+[tool.ruff.lint]
+# E, W, F: pycodestyle and pyflakes. I: import sorting. D: docstrings. A: names
+# that shadow builtins. BLE: blind `except Exception`. N: naming. PLR0912: too
+# many branches in one function.
+select = ["E", "W", "F", "I", "D", "A", "BLE", "N", "PLR0912"]
 
-[tool.pylint]
-ignore-paths = [".git", ".*.venv", ".*venv", ".*.tox", "build"]
-disable = [
-    "C0114", "C0116", "C0301",
-    "C0303", "C0304", "C0305",
-    "C0411", "E0401", "R0801",
-    "R0903", "C0105", "R0913",
-    "R0917", "W0511",
-]
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests do not need docstrings.
+"tests/**" = ["D"]
 
 [tool.codespell]
-skip = [".venv", "venv", ".git", ".tox", ".pytest_cache"]
+skip = [".venv", "venv", ".git", ".tox", ".pytest_cache", ".ruff_cache"]
 
 [tool.vulture]
 paths = ["src", "tests"]

@@ -11,6 +11,12 @@ def rows_from_sql_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     Each row pairs the response's column names (preferring an alias when present)
     with its values. An empty or malformed response yields an empty list.
+
+    Args:
+        payload: the jdbc response body, with ``schema`` and ``datarows``.
+
+    Returns:
+        One dict per data row, keyed by column name.
     """
     schema = payload.get("schema")
     datarows = payload.get("datarows")

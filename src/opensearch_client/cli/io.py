@@ -28,7 +28,11 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
 def add_format_argument(parser: ArgumentParser) -> None:
-    """Add the shared ``--format`` option (yaml/json/csv/tsv, default yaml)."""
+    """Add the shared ``--format`` option (yaml/json/csv/tsv, default yaml).
+
+    Args:
+        parser: the parser to add the option to.
+    """
     parser.add_argument(
         "--format",
         choices=FORMATS,
@@ -50,6 +54,12 @@ def resolve_source(value: str) -> str:
     value is returned unchanged. On an unreadable ``@PATH`` this logs an
     instructive error and exits, rather than letting an OSError traceback reach
     the user.
+
+    Args:
+        value: the CLI argument: literal text, ``-``, or ``@PATH``.
+
+    Returns:
+        The resolved text.
     """
     if value == "-":
         return sys.stdin.read().strip()
@@ -59,7 +69,7 @@ def resolve_source(value: str) -> str:
             with open(path, mode="r", encoding="utf-8") as handle:
                 return handle.read().strip()
         except OSError as error:
-            logging.error(f"could not read file {path!r}: {error}")
+            logging.error("could not read file %r: %s", path, error)
             sys.exit(2)
     return value
 
@@ -79,16 +89,20 @@ def parse_json_object(text: str, label: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        logging.error(f"{label} is not valid JSON: {error}")
+        logging.error("%s is not valid JSON: %s", label, error)
         return None
     if not isinstance(parsed, dict):
-        logging.error(f"{label} must be a JSON object")
+        logging.error("%s must be a JSON object", label)
         return None
     return parsed
 
 
 def add_time_range_arguments(parser: ArgumentParser) -> None:
-    """Add the shared ``--since`` / ``--until`` / ``--time-field`` time-scoping options."""
+    """Add the shared ``--since``, ``--until`` and ``--time-field`` options.
+
+    Args:
+        parser: the parser to add the options to.
+    """
     parser.add_argument(
         "--since",
         metavar="WHEN",
@@ -115,6 +129,12 @@ def resolve_time(value: str) -> str:
     A relative offset ``-<N><unit>`` (unit s/m/h/d/w) is subtracted from now and
     returned as an absolute UTC timestamp; any other value is an absolute time and
     is returned unchanged for OpenSearch to parse.
+
+    Args:
+        value: the ``--since`` or ``--until`` argument.
+
+    Returns:
+        The absolute time string to use in a filter.
     """
     match = _OFFSET.match(value)
     if match is None:
@@ -125,11 +145,17 @@ def resolve_time(value: str) -> str:
 
 
 def time_range_filter(args: Namespace) -> dict[str, Any] | None:
-    """A ``range`` query DSL for ``--since`` / ``--until``, or None if neither is set.
+    """Build a ``range`` query for ``--since`` / ``--until``, if either is set.
 
     ``--since`` is the inclusive lower bound (``gte``) and ``--until`` the
     exclusive upper bound (``lt``), a half-open window so back-to-back ranges do
     not double-count the boundary.
+
+    Args:
+        args: the parsed arguments, with ``since``, ``until`` and ``time_field``.
+
+    Returns:
+        The ``range`` query DSL, or None if neither bound is set.
     """
     bounds: dict[str, str] = {}
     if args.since is not None:
@@ -142,7 +168,15 @@ def time_range_filter(args: Namespace) -> dict[str, Any] | None:
 
 
 def _flatten(record: dict[str, Any], prefix: str = "") -> dict[str, Any]:
-    """Flatten nested objects into dotted keys; leave list/scalar values intact."""
+    """Flatten nested objects into dotted keys; leave list/scalar values intact.
+
+    Args:
+        record: the record to flatten.
+        prefix: the dotted key prefix of the enclosing objects.
+
+    Returns:
+        The record with nested objects replaced by dotted keys.
+    """
     flat: dict[str, Any] = {}
     for key, value in record.items():
         dotted = f"{prefix}.{key}" if prefix else key
@@ -154,7 +188,14 @@ def _flatten(record: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 
 def _cell(value: Any) -> str:
-    """Render a single flattened value for a csv/tsv cell."""
+    """Render a single flattened value for a csv/tsv cell.
+
+    Args:
+        value: the value to render.
+
+    Returns:
+        The cell text: empty for None, JSON for a list or dict.
+    """
     if value is None:
         return ""
     if isinstance(value, (list, dict)):
@@ -163,7 +204,15 @@ def _cell(value: Any) -> str:
 
 
 def _delimited(data: Any, delimiter: str) -> str:
-    """Render data as delimited text: one row per record, dotted union columns."""
+    """Render data as delimited text: one row per record, dotted union columns.
+
+    Args:
+        data: a record or a list of records.
+        delimiter: the column separator.
+
+    Returns:
+        The delimited text, without a trailing newline.
+    """
     records = data if isinstance(data, list) else [data]
     flat_rows: list[dict[str, Any]] = []
     columns: dict[str, None] = {}
@@ -183,7 +232,18 @@ def _delimited(data: Any, delimiter: str) -> str:
 
 
 def render(data: Any, fmt: str) -> str:
-    """Render data in the chosen format, without a trailing newline."""
+    """Render data in the chosen format, without a trailing newline.
+
+    Args:
+        data: the data to render.
+        fmt: one of ``FORMATS``.
+
+    Returns:
+        The rendered text.
+
+    Raises:
+        ValueError: if ``fmt`` is not a known format.
+    """
     if fmt == "yaml":
         return yaml.dump(data, indent=2, sort_keys=False).rstrip("\n")
     if fmt == "json":
@@ -196,8 +256,14 @@ def render(data: Any, fmt: str) -> str:
 
 
 def emit(result: OpensearchResult[Any], label: str, fmt: str) -> None:
-    """Print a result's data in the chosen format, or log its reason and exit 1."""
+    """Print a result's data in the chosen format, or log its reason and exit 1.
+
+    Args:
+        result: the result to print.
+        label: a short name for the operation, used in the failure message.
+        fmt: the output format.
+    """
     if not result.ok:
-        logging.error(f"{label} failed: {result.reason}")
+        logging.error("%s failed: %s", label, result.reason)
         sys.exit(1)
     print(render(result.data, fmt))

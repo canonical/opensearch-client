@@ -26,7 +26,11 @@ NAME = "search"
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register the ``search`` subcommand."""
+    """Register the ``search`` subcommand.
+
+    Args:
+        subparsers: the top-level subparsers action to register under.
+    """
     parser = subparsers.add_parser(
         NAME, help="find the newest documents matching exact FIELD=VALUE terms"
     )
@@ -64,6 +68,13 @@ def build_term_search(terms: list[tuple[str, list[str]]], size: int) -> dict[str
     Results are sorted by ``@timestamp`` descending so we always get the most
     recent ``size`` documents. ``unmapped_type`` keeps the sort from erroring on
     an index in the pattern that lacks the field.
+
+    Args:
+        terms: each field name with the values it may match.
+        size: how many documents to return.
+
+    Returns:
+        The ``_search`` body.
     """
     filters: list[dict[str, Any]] = []
     for field, values in terms:
@@ -107,11 +118,16 @@ def _unmapped_fields(
 
 
 def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the term search against the client."""
+    """Run the term search against the client.
+
+    Args:
+        args: the parsed command-line arguments.
+        client: the client to search with.
+    """
     terms: list[tuple[str, list[str]]] = []
     for token in args.terms:
         if "=" not in token:
-            logging.error(f"search term must be FIELD=VALUE: {token!r}")
+            logging.error("search term must be FIELD=VALUE: %r", token)
             sys.exit(2)
         field, value = token.split("=", 1)
         terms.append((field, [value]))

@@ -41,7 +41,11 @@ _SOURCE_EPILOG = (
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register ``query`` and its sql/ppl/dsl language verbs."""
+    """Register ``query`` and its sql/ppl/dsl language verbs.
+
+    Args:
+        subparsers: the top-level subparsers action to register under.
+    """
     parser = subparsers.add_parser(NAME, help="run a query (SQL, PPL, or raw DSL)")
     languages = parser.add_subparsers(dest="language", required=True)
 
@@ -89,7 +93,7 @@ def _parse_dsl(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        logging.error(f"query dsl is not valid JSON: {error}")
+        logging.error("query dsl is not valid JSON: %s", error)
         sys.exit(2)
     if not isinstance(parsed, dict):
         logging.error(
@@ -100,13 +104,19 @@ def _parse_dsl(text: str) -> dict[str, Any]:
 
 
 def _search_body_from_dsl(parsed: dict[str, Any]) -> dict[str, Any]:
-    """A _search body from parsed DSL: used as-is if it already has a top-level
-    ``query``, otherwise wrapped so the object is treated as the query."""
+    """Build a _search body from parsed DSL.
+
+    The DSL is used as-is if it already has a top-level ``query``, otherwise it is
+    wrapped so the object is treated as the query.
+    """
     return parsed if "query" in parsed else {"query": parsed}
 
 
 def _query_from_dsl(parsed: dict[str, Any]) -> dict[str, Any]:
-    """The bare query DSL for _count: the ``query`` of a full body, else the object itself."""
+    """Get the bare query DSL for _count from parsed DSL.
+
+    This is the ``query`` of a full body, else the object itself.
+    """
     return parsed["query"] if "query" in parsed else parsed
 
 
@@ -139,6 +149,7 @@ def _ppl_with_time(ppl: str, args: Namespace) -> str:
 
 
 def _run_sql(client: OpensearchClient, args: Namespace) -> None:
+    """Run ``query sql``."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -149,6 +160,7 @@ def _run_sql(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
+    """Run ``query ppl``."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -160,6 +172,7 @@ def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_dsl(client: OpensearchClient, args: Namespace) -> None:
+    """Run ``query dsl``."""
     parsed = _parse_dsl(resolve_source(args.query))
     time_filter = time_range_filter(args)
     if args.count_only:
@@ -172,7 +185,12 @@ def _run_dsl(client: OpensearchClient, args: Namespace) -> None:
 
 
 def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the chosen language verb against the client."""
+    """Run the chosen language verb against the client.
+
+    Args:
+        args: the parsed command-line arguments.
+        client: the client to run the verb with.
+    """
     if args.language == "sql":
         _run_sql(client, args)
     elif args.language == "ppl":
