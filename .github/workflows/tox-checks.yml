@@ -24,6 +24,8 @@ jobs:
             tox-args: -e hygiene
           - name: doc checks
             tox-args: -e doc-checks
+          - name: Canonical vale checks
+            tox-args: -e vale
           - name: unit tests
             tox-args: -f unit
 

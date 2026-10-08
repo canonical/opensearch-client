@@ -40,6 +40,7 @@ env_list = [
     "type",
     "hygiene",
     "doc-checks",
+    "vale",
     # requires-python is >=3.10; 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
     "unit-py310",
     "unit-py312",
@@ -124,6 +125,16 @@ commands = [
     ["pymarkdown", "scan", "--recurse", "README.md", "docs", "tests"],
 ]
 
+[tool.tox.env.vale]
+description = "Check documentation against the Canonical style guide"
+package = "skip"
+allowlist_externals = ["bash"]
+deps = ["vale==3.22.0.0"]
+commands = [
+    ["bash", "tests/lint/get-vale-config.sh"],
+    ["vale", "--config=.vale/vale.ini", "--glob=*.md", "README.md", "docs", "tests"],
+]
+
 [tool.tox.env_base.unit]
 factors = [["py310", "py312", "py314"]]
 description = "Run unit tests"
@@ -190,7 +201,7 @@ convention = "google"
 "tests/**" = ["D"]
 
 [tool.codespell]
-skip = [".venv", "venv", ".git", ".tox", ".pytest_cache", ".ruff_cache"]
+skip = [".venv", "venv", ".git", ".tox", ".pytest_cache", ".ruff_cache", ".vale"]
 
 [tool.vulture]
 paths = ["src", "tests"]
