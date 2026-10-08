@@ -6,7 +6,7 @@ These run opensearch_client against a real OpenSearch cluster; the unit tests
 `run.sh` starts an ephemeral single-node OpenSearch via Docker Compose, waits
 for it, runs the tests through `tox`, and tears everything down:
 
-```
+```sh
 tests/functional/run.sh
 ```
 

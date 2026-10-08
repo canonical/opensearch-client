@@ -191,3 +191,13 @@ min_confidence = 60
 
 [tool.mdformat]
 wrap = 80
+
+[tool.pymarkdown.extensions.markdown-tables]
+enabled = true  # parse tables, so MD013 can skip them
+
+[tool.pymarkdown.plugins.md013]
+tables = false  # no line limit in tables
+code_blocks = false  # no line limit in code blocks
+
+[tool.pymarkdown.plugins.md060]
+enabled = false  # clashes with mdformat's table padding

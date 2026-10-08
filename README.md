@@ -6,13 +6,13 @@ OpenSearch client library
 
 Install the package as you would any non-PyPi Python package. For example:
 
-```
+```sh
 python3 -m pip install -e .
 ```
 
 or
 
-```
+```sh
 pipx install git+https://github.com/canonical/opensearch_client.git
 ```
 
