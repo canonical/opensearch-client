@@ -109,10 +109,12 @@ deps = [
     "mdformat",
     "mdformat-gfm",
     "mdformat-pyproject",
+    "pymarkdownlnt",
 ]
 commands = [
     ["bash", "tests/lint/ascii-check.sh", "md"],
     ["mdformat", "--check", "README.md", "docs", "tests"],
+    ["pymarkdown", "scan", "--recurse", "README.md", "docs", "tests"],
 ]
 
 [tool.tox.env_base.unit]
