@@ -59,6 +59,8 @@ skip_install = true
 deps = [
     "ruff==0.15.20",
     "codespell",
+    "shellcheck-py==0.11.0.1",
+    "shfmt-py==4.2.0",
 ]
 commands = [
     ["bash", "tests/lint/ascii-check.sh", "py"],
@@ -66,20 +68,25 @@ commands = [
     ["bash", "-c", "ruff check src tests || touch .fail"],
     ["bash", "-c", "ruff format --check src tests || touch .fail"],
     ["bash", "-c", "codespell . || touch .fail"],
+    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shellcheck -f gcc || touch .fail"],
+    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -d -s -i 4 -l || touch .fail"],
     ["bash", "-c", "! test -f .fail || ( rm .fail && exit 1 )"],
 ]
 
 [tool.tox.env.fmt]
 description = "Automatically format code"
+allowlist_externals = ["bash"]
 skip_install = true
 deps = [
     "ruff==0.15.20",
     "codespell",
+    "shfmt-py==4.2.0",
 ]
 commands = [
     ["ruff", "check", "--fix", "src", "tests"],
     ["ruff", "format", "src", "tests"],
     ["codespell", "-w", "."],
+    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -w -s -i 4"],
 ]
 
 [tool.tox.env.type]
