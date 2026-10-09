@@ -3,7 +3,7 @@
 **/venv/
 **/*.egg-info/
 **/.mypy_cache/
-**.tox/
+**/.tox/
 
 build/
 dist/

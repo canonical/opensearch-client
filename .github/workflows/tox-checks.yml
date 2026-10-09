@@ -2,16 +2,19 @@ name: Tox checks
 
 on:
   pull_request:
-    branches:
-      - 'main'
 
 permissions:
   contents: read
+
+concurrency:
+  group: tox-checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tox:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
