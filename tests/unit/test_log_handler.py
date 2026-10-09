@@ -10,6 +10,7 @@ functional tests. These tests cover what the handler adds on top.
 
 import contextlib
 import logging
+import logging.handlers
 import sys
 import threading
 import time

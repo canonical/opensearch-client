@@ -493,7 +493,7 @@ class OpensearchLogHandler(logging.Handler):
         self._flush_thread.start()
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Queue one record for the flush thread; never block and never raise.
+        """Queue one record for the flush thread; never block, and do not raise.
 
         Note: ``emit`` may be called simultaneously from multiple client threads.
 
