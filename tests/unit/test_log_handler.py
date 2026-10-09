@@ -18,9 +18,11 @@ import time
 from collections.abc import Generator
 from typing import Any
 
+import pytest
+
 from opensearch_client import log_handler
 from opensearch_client.client import OpensearchClient
-from opensearch_client.log_handler import OpensearchHandler
+from opensearch_client.log_handler import EcsFormatter, OpensearchHandler
 from opensearch_client.result import Failure, OpensearchResult, Success
 
 # How long the tests wait on another thread before deciding it is stuck. Only
@@ -255,7 +257,10 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         "event": {"dataset": "custom-dataset"},
         "log": {"level": "OVERRIDE"},
     }
-    handler = _handler(cluster, service_name="superset", extra_fields=extra_fields)
+    handler = _handler(cluster)
+    handler.setFormatter(
+        EcsFormatter(service_name="superset", extra_fields=extra_fields)
+    )
     extra = {"collector": "superset", "batch.size": 3, "skipped": None}
     first = _record("one", extra)
     first.created = 1_700_000_000.123456
@@ -296,6 +301,21 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert second_document["error"] == {"stack_trace": second.stack_info}
         # Nothing from the first record carries over into the second.
         assert second_document["labels"] == {"env": "test"}
+
+
+def test_only_an_ecs_formatter_is_accepted_and_format_returns_json() -> None:
+    """The handler queues documents, so setFormatter refuses other formatters."""
+    handler = _handler(FakeCluster())
+    formatter = EcsFormatter(service_name="custom")
+    record = _record("hello")
+
+    with _running(handler):
+        handler.setFormatter(formatter)
+        with pytest.raises(TypeError):
+            handler.setFormatter(logging.Formatter("%(message)s"))
+
+    # For any other handler, format returns the same document as JSON text.
+    assert json.loads(formatter.format(record)) == formatter.format_document(record)
 
 
 def test_flush_thread_starts_after_the_handler_is_fully_set_up() -> None:
