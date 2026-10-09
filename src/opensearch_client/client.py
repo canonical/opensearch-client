@@ -5,6 +5,8 @@
 
 import json
 from collections.abc import Iterable
+from enum import Enum
+from http import HTTPStatus
 from time import sleep
 from typing import Any, NamedTuple
 
@@ -22,6 +24,24 @@ BULK_MAX_BYTES = 10_000_000
 BULK_RETRY_BASE_DELAY = 1.0
 BULK_RETRY_MAX_DELAY = 60.0
 
+
+class FailureReason(str, Enum):
+    """The OpenSearch error types that ``bulk`` knows how to classify.
+
+    A member equals its OpenSearch string, so the ``error.type`` of a response
+    compares and hashes the same as the member. An error type that is not listed
+    here stays a plain string and is classified as unrecognized.
+    """
+
+    CLUSTER_BLOCK = "cluster_block_exception"
+    INDEX_NOT_FOUND = "index_not_found_exception"
+    DOCUMENT_PARSING = "document_parsing_exception"
+    ILLEGAL_ARGUMENT = "illegal_argument_exception"
+    MAPPER_PARSING = "mapper_parsing_exception"
+    STRICT_DYNAMIC_MAPPING = "strict_dynamic_mapping_exception"
+    VERSION_CONFLICT = "version_conflict_engine_exception"
+
+
 # How ``bulk`` classifies a failed document. Only a transient failure is retried.
 # 1. An error type listed below decides first, permanent before transient, even
 #    when the status points the other way (a 403 ``cluster_block_exception`` and a
@@ -29,46 +49,48 @@ BULK_RETRY_MAX_DELAY = 60.0
 # 2. Otherwise the status decides, using the status sets below.
 # 3. Anything unrecognized is transient: retrying a hopeless document costs a few
 #    delayed attempts, while giving up on a recoverable one loses it.
-TRANSIENT_ERRORS = frozenset({"cluster_block_exception", "index_not_found_exception"})
+TRANSIENT_ERRORS = frozenset(
+    {FailureReason.CLUSTER_BLOCK, FailureReason.INDEX_NOT_FOUND}
+)
 PERMANENT_ERRORS = frozenset(
     {
-        "document_parsing_exception",
-        "illegal_argument_exception",
-        "mapper_parsing_exception",
-        "strict_dynamic_mapping_exception",
-        "version_conflict_engine_exception",
+        FailureReason.DOCUMENT_PARSING,
+        FailureReason.ILLEGAL_ARGUMENT,
+        FailureReason.MAPPER_PARSING,
+        FailureReason.STRICT_DYNAMIC_MAPPING,
+        FailureReason.VERSION_CONFLICT,
     }
 )
 # Statuses are listed for visibility: an unlisted status is transient anyway, so
 # TRANSIENT_STATUSES does not change any result.
 TRANSIENT_STATUSES = frozenset(
     {
-        408,  # request timeout
-        425,  # too early
-        429,  # too many requests (also a full write queue or a blocked index)
-        500,  # internal server error
-        502,  # bad gateway
-        503,  # service unavailable
-        504,  # gateway timeout
-        507,  # insufficient storage
+        HTTPStatus.REQUEST_TIMEOUT,
+        HTTPStatus.TOO_EARLY,
+        HTTPStatus.TOO_MANY_REQUESTS,  # also a full write queue or a blocked index
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+        HTTPStatus.INSUFFICIENT_STORAGE,
     }
 )
 PERMANENT_STATUSES = frozenset(
     {
-        400,  # bad request
-        401,  # unauthorized
-        403,  # forbidden
-        404,  # not found
-        405,  # method not allowed
-        406,  # not acceptable
-        409,  # conflict
-        410,  # gone
-        413,  # payload too large (a single document, as batches are halved)
-        414,  # URI too long
-        415,  # unsupported media type
-        422,  # unprocessable content
-        501,  # not implemented
-        505,  # HTTP version not supported
+        HTTPStatus.BAD_REQUEST,
+        HTTPStatus.UNAUTHORIZED,
+        HTTPStatus.FORBIDDEN,
+        HTTPStatus.NOT_FOUND,
+        HTTPStatus.METHOD_NOT_ALLOWED,
+        HTTPStatus.NOT_ACCEPTABLE,
+        HTTPStatus.CONFLICT,
+        HTTPStatus.GONE,
+        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,  # a single document, as batches are halved
+        HTTPStatus.REQUEST_URI_TOO_LONG,
+        HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        HTTPStatus.UNPROCESSABLE_ENTITY,
+        HTTPStatus.NOT_IMPLEMENTED,
+        HTTPStatus.HTTP_VERSION_NOT_SUPPORTED,
     }
 )
 
@@ -464,7 +486,9 @@ class OpensearchClient:
             if result:
                 summary["batches"] += 1
                 _tally_bulk_items(result.data, batch, action, summary, failures)
-            elif result.status == 413 and len(batch) > 1:
+            elif (
+                result.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE and len(batch) > 1
+            ):
                 middle = len(batch) // 2
                 queue.insert(0, batch[middle:])
                 queue.insert(0, batch[:middle])
@@ -736,7 +760,7 @@ class OpensearchClient:
         res = self.request("GET", index)
         if res:
             return Success(True)
-        if res.status == 404:
+        if res.status == HTTPStatus.NOT_FOUND:
             return Success(False)
         return res
 

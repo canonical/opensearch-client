@@ -394,6 +394,7 @@ def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> Non
     """
     cases = (
         (503, "unavailable_shards_exception", True),
+        (429, "es_rejected_execution_exception", True),
         (403, "cluster_block_exception", True),
         (400, "mapper_parsing_exception", False),
         (403, "security_exception", False),
