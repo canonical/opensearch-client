@@ -20,12 +20,16 @@ from typing import Any
 
 import pytest
 
+from opensearch_client import client as client_module
+from opensearch_client import log_handler
+from opensearch_client.client import OpensearchClient
 from opensearch_client.log_handler import (
     ECSLogContextFilter,
     ECSLogFormatter,
     OpensearchLogHandler,
 )
 from opensearch_client.result import Failure, OpensearchResult, Success
+from opensearch_client.transport import REQUEST_TIMEOUT
 
 # How long the tests wait on another thread before deciding it is stuck. Only
 # reached when the code under test is broken.
@@ -477,3 +481,34 @@ def test_close_sends_the_remaining_records_and_drops_later_ones() -> None:
     assert time.monotonic() - started < _WAIT_SECONDS
     assert handler.dropped == 1
     assert _messages(client) == ["last"]
+
+
+def test_close_waits_as_long_as_a_send_with_all_its_retries_can_take() -> None:
+    """close must not give up on the final send while bulk is still retrying.
+
+    The longest send is measured on a real bulk against a cluster that is always
+    down, with its sleeps recorded instead of slept.
+    """
+
+    class AlwaysDown:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, *_: Any, **__: Any) -> OpensearchResult[Any]:
+            self.calls += 1
+            return Failure("unavailable", status=503)
+
+    transport = AlwaysDown()
+    delays: list[float] = []
+    original_sleep = client_module.sleep
+    client_module.sleep = delays.append
+    try:
+        OpensearchClient(transport).bulk(
+            [{"a": 1}], max_retries=log_handler._SEND_RETRIES
+        )
+    finally:
+        client_module.sleep = original_sleep
+
+    # Every attempt may run to its request timeout, and bulk sleeps between them.
+    longest_send = transport.calls * REQUEST_TIMEOUT + sum(delays)
+    assert log_handler._CLOSE_JOIN_SECONDS >= longest_send

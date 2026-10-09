@@ -30,7 +30,9 @@ from datetime import datetime, timezone
 from threading import Condition, Event, Lock, Thread, current_thread
 from typing import Any, Protocol
 
+from opensearch_client.client import BULK_RETRY_BASE_DELAY, BULK_RETRY_MAX_DELAY
 from opensearch_client.result import OpensearchResult
+from opensearch_client.transport import REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +40,15 @@ logger = logging.getLogger(__name__)
 # logging.shutdown cannot hang when OpenSearch is unreachable.
 _FLUSH_WAIT_SECONDS = 10.0
 
-# How long close() waits for the flush thread to finish its final send.
-_CLOSE_JOIN_SECONDS = 5.0
-
 # How many more times bulk() resends documents that failed to index.
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
+
+# How long close() waits for the flush thread to finish its final send
+_CLOSE_JOIN_SECONDS = (_SEND_RETRIES + 1) * REQUEST_TIMEOUT + sum(
+    min(BULK_RETRY_BASE_DELAY * 2**retry, BULK_RETRY_MAX_DELAY)
+    for retry in range(_SEND_RETRIES)
+)
 
 # Errors that are classified as transient, and should be retried: the disk watermark
 # blocking writes, and an index that was deleted and will be created again.
@@ -423,8 +428,8 @@ class OpensearchLogHandler(logging.Handler):
     def close(self) -> None:
         """Stop the flush thread after its final send, then close the handler.
 
-        Waits at most 5 seconds for that final send. Records it cannot send are
-        dropped.
+        Waits for that final send for as long as ``OpensearchClient.bulk`` can take
+        with its retries. Records it cannot send are dropped.
         """
         self._flush_thread_stop.set()
         self._flush_thread_wakeup.set()
