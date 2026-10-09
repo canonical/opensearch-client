@@ -84,12 +84,16 @@ deps = [
     "ruff==0.15.20",
     "codespell",
     "shfmt-py==4.2.0",
+    "mdformat",
+    "mdformat-gfm",
+    "mdformat-pyproject",
 ]
 commands = [
     ["ruff", "check", "--fix", "src", "tests"],
     ["ruff", "format", "src", "tests"],
     ["codespell", "-w", "."],
     ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -w -s -i 4"],
+    ["bash", "-c", "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat"],
 ]
 
 [tool.tox.env.type]
@@ -123,7 +127,7 @@ deps = [
 ]
 commands = [
     ["bash", "tests/lint/ascii-check.sh", "md"],
-    ["mdformat", "--check", "README.md", "docs", "tests"],
+    ["bash", "-c", "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat --check"],
     ["pymarkdown", "scan", "--recurse", "README.md", "docs", "tests"],
 ]
 
