@@ -54,10 +54,6 @@ _CLOSE_JOIN_SECONDS = (_SEND_RETRIES + 1) * REQUEST_TIMEOUT + sum(
     for retry in range(_SEND_RETRIES)
 )
 
-# Errors that are classified as transient, and should be retried: the disk watermark
-# blocking writes, and an index that was deleted and will be created again.
-_TEMPORARY_ERROR_TYPES = ("cluster_block_exception", "index_not_found_exception")
-
 # The ECS version the documents conform to.
 _ECS_VERSION = "9.0"
 
@@ -652,9 +648,9 @@ class OpensearchLogHandler(logging.Handler):
                 self._should_check_index = True  # create the index before the next send
             is_temporary = (
                 status is None
-                or status in (408, 429)
+                or status in (HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS)
                 or status >= 500
-                or error_type in _TEMPORARY_ERROR_TYPES
+                or error_type in TRANSIENT_ERRORS
             )
             if is_temporary:
                 kept.append(failure["document"])
