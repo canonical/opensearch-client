@@ -365,8 +365,10 @@ class OpensearchLogHandler(logging.Handler):
         return self._dropped
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Queue one record for the flush thread; never block and never raise.
+        """Queue one record for the flush thread; never block, and do not raise.
 
+        A record that cannot be queued is passed to ``handleError``. Like the
+        standard library's handlers, only ``RecursionError`` is let through.
         Once ``close`` has been called, the record is counted in ``dropped``
         instead of queued.
 
@@ -433,8 +435,8 @@ class OpensearchLogHandler(logging.Handler):
         """Send the queue on the flush thread until ``close`` is called.
 
         Sends every ``flush_interval`` seconds, when woken by a full buffer, and
-        when ``flush`` asks. A failed send never ends the loop. After ``close``
-        the loop makes one last send and exits.
+        when ``flush`` asks. A failed send is logged and never ends the loop.
+        After ``close`` the loop makes one last send and exits.
         """
         while True:
             self._flush_thread_wakeup.wait(self.flush_interval)
@@ -467,6 +469,10 @@ class OpensearchLogHandler(logging.Handler):
         reason after ``bulk``'s retries go back to the front of the queue. Records
         the cluster rejects, or that are lost to an exception, are added to
         ``dropped``.
+
+        Raises:
+            Exception: whatever ``bulk`` raises, after its documents are counted
+                as dropped.
         """
         with self._lock:
             if not self._buffer:

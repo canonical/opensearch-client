@@ -256,7 +256,7 @@ def test_bulk_reports_rejected_documents_and_retries_only_transient_ones() -> No
             permanent = _client.bulk([{"n": "not-an-int"}], index=index, max_retries=3)
         assert not permanent
         assert permanent.data["batches"] == 1
-        assert recorder.delays == []
+        assert not recorder.delays
 
         # A write-blocked index fails every item with a 403 cluster_block_exception.
         # The status alone looks permanent, but the error type marks it transient
