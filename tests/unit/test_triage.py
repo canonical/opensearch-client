@@ -11,6 +11,8 @@ parsing, the dry-run and cross-check safety paths, and validation/errors.
 from argparse import Namespace
 from typing import Any
 
+import pytest
+
 from opensearch_client import triage
 from opensearch_client.client import OpensearchClient
 from opensearch_client.result import Failure, OpensearchResult, Success
@@ -187,3 +189,16 @@ def test_run_wraps_a_failed_call_as_a_result() -> None:
     )
     assert not result.ok
     assert "503 unavailable" in result.reason
+
+
+def test_run_returns_an_unexpected_response_as_a_result_but_not_a_bug() -> None:
+    # A cluster that answers with the wrong shape is reported, naming the path.
+    client, _ = _client([{"hits": {}}])
+    result = triage.run(Namespace(command="status", index="x"), client)
+    assert not result.ok
+    assert "unexpected response" in result.reason
+    assert "total" in result.reason
+
+    # A programming error (here, missing arguments) is not hidden as a result.
+    with pytest.raises(AttributeError):
+        triage.run(Namespace(), client)

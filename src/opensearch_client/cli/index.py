@@ -276,7 +276,7 @@ def _run_delete(args: Namespace, client: OpensearchClient) -> None:
         _delete_pattern(args, client)
 
 
-def run(  # noqa: PLR0912
+def run(  # noqa: PLR0912  # dispatcher: one branch per operation
     args: Namespace, client: OpensearchClient
 ) -> None:
     """Run the chosen operation against the client.

@@ -35,7 +35,7 @@ import logging
 import os
 import sys
 
-import urllib3  # pyright: ignore[reportMissingImports]
+import urllib3
 
 from opensearch_client.client import DEFAULT_INDEX, OpensearchClient
 from opensearch_client.transport import (

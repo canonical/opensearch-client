@@ -207,7 +207,9 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     return versions
 
 
-def run(args: Namespace, client: OpensearchClient) -> None:  # noqa: PLR0912
+def run(  # noqa: PLR0912  # dispatcher: one branch per operation
+    args: Namespace, client: OpensearchClient
+) -> None:
     """Run the chosen operation against the client.
 
     Args:

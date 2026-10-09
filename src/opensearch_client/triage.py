@@ -85,6 +85,29 @@ def _data(res: OpensearchResult[Any]) -> Any:
     return res.data
 
 
+def _dig(data: Any, *path: Any) -> Any:
+    """Return the value at ``path`` inside a response, or raise TriageError.
+
+    Args:
+        data: the response, as nested dicts and lists.
+        *path: the keys and indexes to follow, in order.
+
+    Returns:
+        The value found at the end of the path.
+
+    Raises:
+        TriageError: if the response does not have that shape.
+    """
+    try:
+        for step in path:
+            data = data[step]
+    except (KeyError, IndexError, TypeError) as e:
+        raise TriageError(
+            f"unexpected response from OpenSearch: no {list(path)}"
+        ) from e
+    return data
+
+
 def _find_pushed_down_request(node: Any) -> str | None:
     """Find the OpenSearchQueryRequest string in a SQL _explain plan, if present.
 
@@ -205,7 +228,7 @@ def sql_count(client: OpensearchClient, index: str, where: str) -> int:
     """
     sql = f"SELECT COUNT(*) FROM {index} WHERE {where}"
     resp = _data(client.sql_raw(sql))
-    return resp["datarows"][0][0]
+    return _dig(resp, "datarows", 0, 0)
 
 
 def dsl_count(client: OpensearchClient, index: str, query: dict[str, Any]) -> int:
@@ -349,7 +372,7 @@ def eliminate(
             timeout=_TAG_TIMEOUT,
         )
     )
-    task = _await_task(client, started["task"])
+    task = _await_task(client, _dig(started, "task"))
     response = task.get("response", {})
     failures = response.get("failures", [])
     summary["applied"] = True
@@ -441,7 +464,7 @@ def restore(
             timeout=_TAG_TIMEOUT,
         )
     )
-    task = _await_task(client, started["task"])
+    task = _await_task(client, _dig(started, "task"))
     response = task.get("response", {})
     failures = response.get("failures", [])
     summary["applied"] = True
@@ -558,7 +581,7 @@ def init(
             refresh=True,
         )
     )
-    task = _await_task(client, started["task"], poll_seconds)
+    task = _await_task(client, _dig(started, "task"), poll_seconds)
 
     response = task.get("response", {})
     failures = response.get("failures", [])
@@ -599,11 +622,11 @@ def status(client: OpensearchClient, index: str) -> dict[str, Any]:
     }
     resp = _data(client.search_raw(body, index=index))
 
-    total = resp["hits"]["total"]["value"]
-    untagged = resp["aggregations"]["untagged"]["doc_count"]
+    total = _dig(resp, "hits", "total", "value")
+    untagged = _dig(resp, "aggregations", "untagged", "doc_count")
     layers = {
-        int(bucket["key"]): bucket["doc_count"]
-        for bucket in resp["aggregations"]["by_layer"]["buckets"]
+        int(_dig(bucket, "key")): _dig(bucket, "doc_count")
+        for bucket in _dig(resp, "aggregations", "by_layer", "buckets")
     }
     remaining = layers.get(UNTRIAGED, 0)
     eliminated = {layer: count for layer, count in layers.items() if layer >= 1}
@@ -634,9 +657,10 @@ def next_layer(client: OpensearchClient, index: str) -> int:
 def run(args: Namespace, client: OpensearchClient) -> OpensearchResult[dict[str, Any]]:
     """Dispatch to the chosen subcommand and return its result mapping.
 
-    Any failure (a failed OpenSearch call surfaced as TriageError, or a predicate
-    that cannot be tagged safely) is caught here and returned as ``ok=False`` with
-    a reason, so the caller never handles a raised exception.
+    The failures this module raises on purpose (a failed OpenSearch call or an
+    unexpected response, both TriageError, and a predicate or argument that cannot
+    be used safely, ValueError) are caught here and returned as ``ok=False`` with a
+    reason. Any other exception is a bug and propagates.
 
     Args:
         args: the parsed command-line arguments.
@@ -647,8 +671,8 @@ def run(args: Namespace, client: OpensearchClient) -> OpensearchResult[dict[str,
     """
     try:
         data = _dispatch(args, client)
-    # Boundary: translate any exception to a result value.
-    except Exception as e:  # noqa: BLE001
+    # Boundary: translate this module's own errors to a result value.
+    except (TriageError, ValueError) as e:
         return Failure(str(e))
     return Success(data)
 

@@ -17,6 +17,7 @@ requires-python = ">=3.10"
 dependencies = [
     "requests",
     "PyYAML",
+    "urllib3",
 ]
 
 [project.optional-dependencies]
@@ -198,6 +199,10 @@ select = ["E", "W", "F", "I", "D", "A", "BLE", "N", "PLR0912"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.pep8-naming]
+# logging.Handler.handleError: the standard library's name, overridden in tests.
+extend-ignore-names = ["handleError"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests do not need docstrings.
