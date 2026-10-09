@@ -26,6 +26,8 @@ jobs:
             tox-args: -e doc-checks
           - name: Canonical vale checks
             tox-args: -e vale
+          - name: actionlint checks
+            tox-args: -e actionlint
           - name: unit tests
             tox-args: -f unit
 

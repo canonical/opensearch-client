@@ -42,6 +42,7 @@ env_list = [
     "hygiene",
     "doc-checks",
     "vale",
+    "actionlint",
     # requires-python is >=3.10; 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
     "unit-py310",
     "unit-py312",
