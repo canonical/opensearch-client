@@ -12,7 +12,7 @@ what a log handler needs on top of it:
 - a bounded in-memory buffer, so logging never blocks on the network;
 - a background thread that flushes the buffer by size or by interval;
 - a final flush on shutdown, so the last records are not lost;
-- an ``EcsFormatter`` that converts a ``LogRecord`` into an ECS-style document;
+- an ``ECSLogFormatter`` that converts a ``LogRecord`` into an ECS-style document;
 - a guarantee that a shipping failure never raises into the application and
   never feeds back into the handler itself.
 """
@@ -27,7 +27,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from threading import Event, Lock, Thread, current_thread
-from typing import Any
+from typing import Any, cast
 
 from opensearch_client.client import OpensearchClient
 
@@ -56,11 +56,11 @@ _STANDARD_RECORD_ATTRIBUTES = frozenset(
 ) | {"message", "asctime"}
 
 
-class EcsFormatter(logging.Formatter):
+class ECSLogFormatter(logging.Formatter):
     """Format log records as ECS documents.
 
     ``format_document`` returns a document as a dict, which is what
-    ``OpensearchHandler`` queues. ``format`` returns the same document as JSON
+    ``OpensearchLogHandler`` queues. ``format`` returns the same document as JSON
     text, so the formatter also works with any other handler.
     """
 
@@ -244,7 +244,7 @@ class EcsFormatter(logging.Formatter):
                 target[key] = value
 
 
-class OpensearchHandler(logging.Handler):
+class OpensearchLogHandler(logging.Handler):
     """Ship log records to an OpenSearch index.
 
     ``emit`` only queues a record. A background thread sends the queue with
@@ -266,8 +266,8 @@ class OpensearchHandler(logging.Handler):
     while sending, are ignored so that sending cannot create records to send.
 
     Each record becomes an ECS document, built by the handler's
-    :class:`EcsFormatter`, which lists the fields. To set the service name or
-    extra fields, give the handler your own ``EcsFormatter`` with
+    :class:`ECSLogFormatter`, which lists the fields. To set the service name or
+    extra fields, give the handler your own ``ECSLogFormatter`` with
     ``setFormatter``.
     """
 
@@ -319,8 +319,8 @@ class OpensearchHandler(logging.Handler):
         self._backing_off = False
         self._flush_waiters: list[Event] = []
 
-        # Builds the documents; setFormatter can replace it with another EcsFormatter
-        self.setFormatter(EcsFormatter())
+        # Builds the documents; setFormatter can replace it with another ECSLogFormatter
+        self.setFormatter(ECSLogFormatter())
 
         # Configure the flush mechanism / timer. The thread starts last, so that
         # everything it uses exists before it runs.
@@ -328,28 +328,11 @@ class OpensearchHandler(logging.Handler):
         self._wake_event = Event()
         self._stop_event = Event()
         self._flush_thread = Thread(
-            target=self._run, name="opensearch_client-log-flush", daemon=True
+            target=self._run_flush_loop, name="opensearch_client-log-flush", daemon=True
         )
         # Filter out records emitted by the flushing thread
         self.addFilter(lambda record: current_thread() is not self._flush_thread)
         self._flush_thread.start()
-
-    def setFormatter(  # noqa: N802  # the standard library's name
-        self, fmt: logging.Formatter | None
-    ) -> None:
-        """Set the formatter that converts records into documents.
-
-        Args:
-            fmt (logging.Formatter | None): an ``EcsFormatter``.
-
-        Raises:
-            TypeError: if ``fmt`` is not an ``EcsFormatter``, because the handler
-                queues the documents it builds, not text.
-        """
-        if not isinstance(fmt, EcsFormatter):
-            raise TypeError("OpensearchHandler needs an EcsFormatter")
-        super().setFormatter(fmt)
-        self._ecs_formatter = fmt
 
     @property
     def dropped(self) -> int:
@@ -366,7 +349,7 @@ class OpensearchHandler(logging.Handler):
             record (logging.LogRecord): the record to ship.
         """
         try:
-            doc = self._ecs_formatter.format_document(record)
+            doc = cast(ECSLogFormatter, self.formatter).format_document(record)
 
             with self._lock:
                 # Check if handler is already closed.
@@ -423,7 +406,7 @@ class OpensearchHandler(logging.Handler):
             return True
         return bool(self._client.create_index({}, index))
 
-    def _run(self) -> None:
+    def _run_flush_loop(self) -> None:
         """Send the queue on the flush thread until ``close`` is called.
 
         Sends every ``flush_interval`` seconds, when woken by a full buffer, and

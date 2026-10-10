@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for opensearch_client.log_handler.OpensearchHandler.
+"""Unit tests for opensearch_client.log_handler.OpensearchLogHandler.
 
 Batching, retries and request building belong to OpensearchClient.bulk and are
 tested in test_client.py, and delivery to a real cluster is covered by the
@@ -18,11 +18,9 @@ import time
 from collections.abc import Generator
 from typing import Any
 
-import pytest
-
 from opensearch_client import log_handler
 from opensearch_client.client import OpensearchClient
-from opensearch_client.log_handler import EcsFormatter, OpensearchHandler
+from opensearch_client.log_handler import ECSLogFormatter, OpensearchLogHandler
 from opensearch_client.result import Failure, OpensearchResult, Success
 
 # How long the tests wait on another thread before deciding it is stuck. Only
@@ -157,7 +155,7 @@ class ThreadSpy:
         pass
 
 
-class ErrorRecordingHandler(OpensearchHandler):
+class ErrorRecordingHandler(OpensearchLogHandler):
     """Keeps the records passed to handleError instead of printing a traceback."""
 
     def __init__(self, client: OpensearchClient, index: str, **kwargs: Any) -> None:
@@ -168,14 +166,14 @@ class ErrorRecordingHandler(OpensearchHandler):
         self.errored_records.append(record)
 
 
-def _handler(cluster: FakeCluster, **kwargs: Any) -> OpensearchHandler:
+def _handler(cluster: FakeCluster, **kwargs: Any) -> OpensearchLogHandler:
     # An hour, so the timer never fires during a test unless the test sets it.
     kwargs.setdefault("flush_interval", 3600.0)
-    return OpensearchHandler(OpensearchClient(cluster), "logs", **kwargs)
+    return OpensearchLogHandler(OpensearchClient(cluster), "logs", **kwargs)
 
 
 @contextlib.contextmanager
-def _running(handler: OpensearchHandler) -> Generator[OpensearchHandler]:
+def _running(handler: OpensearchLogHandler) -> Generator[OpensearchLogHandler]:
     """Yield the handler, then close it so its flush thread stops."""
     try:
         yield handler
@@ -199,7 +197,7 @@ def _record(message: str, extra: dict[str, Any] | None = None) -> logging.LogRec
 
 
 def _emit_all_then_signal(
-    handler: OpensearchHandler,
+    handler: OpensearchLogHandler,
     records: list[logging.LogRecord],
     emitted: threading.Event,
 ) -> None:
@@ -259,7 +257,7 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
     }
     handler = _handler(cluster)
     handler.setFormatter(
-        EcsFormatter(service_name="superset", extra_fields=extra_fields)
+        ECSLogFormatter(service_name="superset", extra_fields=extra_fields)
     )
     extra = {"collector": "superset", "batch.size": 3, "skipped": None}
     first = _record("one", extra)
@@ -303,18 +301,11 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert second_document["labels"] == {"env": "test"}
 
 
-def test_only_an_ecs_formatter_is_accepted_and_format_returns_json() -> None:
-    """The handler queues documents, so setFormatter refuses other formatters."""
-    handler = _handler(FakeCluster())
-    formatter = EcsFormatter(service_name="custom")
+def test_format_returns_the_document_as_json_text() -> None:
+    """For any other handler, format returns the same document as JSON text."""
+    formatter = ECSLogFormatter(service_name="custom")
     record = _record("hello")
 
-    with _running(handler):
-        handler.setFormatter(formatter)
-        with pytest.raises(TypeError):
-            handler.setFormatter(logging.Formatter("%(message)s"))
-
-    # For any other handler, format returns the same document as JSON text.
     assert json.loads(formatter.format(record)) == formatter.format_document(record)
 
 
