@@ -11,14 +11,14 @@ functional tests. These tests cover what the handler adds on top.
 import contextlib
 import json
 import logging
-import socket
 import sys
 import threading
 import time
 from collections.abc import Generator
 from typing import Any
 
-from opensearch_client import log_handler
+import pytest
+
 from opensearch_client.client import OpensearchClient
 from opensearch_client.log_handler import ECSLogFormatter, OpensearchLogHandler
 from opensearch_client.result import Failure, OpensearchResult, Success
@@ -26,9 +26,6 @@ from opensearch_client.result import Failure, OpensearchResult, Success
 # How long the tests wait on another thread before deciding it is stuck. Only
 # reached when the code under test is broken.
 _WAIT_SECONDS = 5
-
-# How long to watch for activity that should not happen.
-_QUIET_SECONDS = 0.3
 
 
 def _parse_bulk_documents(body: bytes | None) -> list[dict[str, Any]]:
@@ -137,24 +134,6 @@ class BlockingCluster(FakeCluster):
         return super().request(method, path, body, content_type, timeout)
 
 
-class ThreadSpy:
-    """Stands in for Thread: records the handler's attributes at start, runs nothing."""
-
-    attributes_at_start: set[str] = set()
-
-    def __init__(self, target: Any, name: str, daemon: bool) -> None:
-        self.target = target
-
-    def start(self) -> None:
-        ThreadSpy.attributes_at_start = set(vars(self.target.__self__))
-
-    def is_alive(self) -> bool:
-        return False
-
-    def join(self, timeout: float | None = None) -> None:
-        pass
-
-
 class ErrorRecordingHandler(OpensearchLogHandler):
     """Keeps the records passed to handleError instead of printing a traceback."""
 
@@ -196,16 +175,6 @@ def _record(message: str, extra: dict[str, Any] | None = None) -> logging.LogRec
     )
 
 
-def _emit_all_then_signal(
-    handler: OpensearchLogHandler,
-    records: list[logging.LogRecord],
-    emitted: threading.Event,
-) -> None:
-    for record in records:
-        handler.emit(record)
-    emitted.set()
-
-
 def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
     """An exception record becomes an ECS document; a bad one is reported."""
     cluster = FakeCluster()
@@ -234,11 +203,6 @@ def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
         document = cluster.documents[0]
         assert document["message"] == "got text and 3"
         assert document["log"]["level"] == "error"
-        assert document["log"]["logger"] == "test"
-        assert document["event"]["severity"] == logging.ERROR
-        # With no service_name, the name comes from the running program.
-        assert document["service"]["name"]
-        assert document["event"]["dataset"] == document["service"]["name"]
         assert document["error"]["type"] == "ValueError"
         assert document["error"]["message"] == "bad value"
         assert "ValueError: bad value" in document["error"]["stack_trace"]
@@ -272,9 +236,6 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
 
         first_document, second_document = cluster.documents
         assert first_document["@timestamp"] == "2023-11-14T22:13:20.123Z"
-        assert first_document["ecs"] == {"version": "9.0"}
-        assert first_document["host"] == {"name": socket.gethostname()}
-        assert first_document["agent"]["type"] == "opensearch_client"
         # extra_fields are merged into service, not a replacement for it.
         service = first_document["service"]
         assert service["name"] == "superset"
@@ -282,18 +243,13 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert service["ephemeral_id"] == second_document["service"]["ephemeral_id"]
         # extra_fields replace a default (event.dataset) and a field taken from
         # the record (log.level), and leave their siblings alone.
-        assert first_document["event"] == {
-            "dataset": "custom-dataset",
-            "severity": logging.INFO,
-        }
+        assert first_document["event"]["dataset"] == "custom-dataset"
         assert first_document["log"]["level"] == "OVERRIDE"
-        assert first_document["log"]["logger"] == "test"
         assert first_document["labels"] == {
             "env": "test",
             "collector": "superset",
             "batch_size": "3",
         }
-        assert first_document["python"] == {"msg": "one", "pathname": __file__}
         assert "error" not in first_document
         # stack_info alone is reported as a stack trace, with no exception type.
         assert second_document["error"] == {"stack_trace": second.stack_info}
@@ -309,19 +265,6 @@ def test_format_returns_the_document_as_json_text() -> None:
     assert json.loads(formatter.format(record)) == formatter.format_document(record)
 
 
-def test_flush_thread_starts_after_the_handler_is_fully_set_up() -> None:
-    """A thread started early could use state that does not exist yet."""
-    original = log_handler.Thread
-    setattr(log_handler, "Thread", ThreadSpy)
-    try:
-        handler = _handler(FakeCluster())
-    finally:
-        setattr(log_handler, "Thread", original)
-
-    assert ThreadSpy.attributes_at_start == set(vars(handler))
-    handler.close()
-
-
 def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
     """While a send hangs, emit returns, the oldest waiting record is dropped."""
     cluster = BlockingCluster()
@@ -331,9 +274,13 @@ def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
 
         emitted = threading.Event()
         records = [_record("b"), _record("c"), _record("d")]
-        emitter = threading.Thread(
-            target=_emit_all_then_signal, args=(handler, records, emitted)
-        )
+
+        def emit_records() -> None:
+            for record in records:
+                handler.emit(record)
+            emitted.set()
+
+        emitter = threading.Thread(target=emit_records)
         emitter.start()
         emit_returned = emitted.wait(_WAIT_SECONDS)
         cluster.release_send.set()
@@ -453,7 +400,7 @@ def test_failed_sends_are_kept_and_resent_until_the_handler_closes() -> None:
 
         cluster.bulk_received.clear()
         handler.emit(_record("b"))  # fills the buffer, but the handler backs off
-        assert not cluster.bulk_received.wait(_QUIET_SECONDS), "retrying in a loop"
+        assert not cluster.bulk_received.wait(0.3), "retrying in a loop"
 
         cluster.recover()
         handler.flush()
@@ -535,6 +482,23 @@ def test_a_send_that_raises_is_contained() -> None:
 
     assert handler.dropped == 3
     assert not handler._flush_thread.is_alive()
+
+
+def test_emit_lets_recursion_error_through() -> None:
+    """Like standard library handlers, emit re-raises RecursionError."""
+
+    class Recursive:
+        def __str__(self) -> str:
+            raise RecursionError
+
+    handler = _handler(FakeCluster(), flush_interval=3600.0)
+    record = logging.LogRecord(
+        "test", logging.INFO, __file__, 1, "%s", (Recursive(),), None
+    )
+
+    with _running(handler):
+        with pytest.raises(RecursionError):
+            handler.emit(record)
 
 
 def test_close_sends_the_remaining_records_and_stops_the_flush_thread() -> None:

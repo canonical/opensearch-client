@@ -4,9 +4,9 @@
 """Functional tests for opensearch_client.log_handler against a live OpenSearch cluster.
 
 These need the same ``OPENSEARCH_URL`` / ``OPENSEARCH_USER`` /
-``OPENSEARCH_PASSWORD`` variables as ``test_opensearch_client.py`` and are skipped when any
-is unset. ``tests/functional/run.sh`` starts an ephemeral Docker cluster, sets
-them, runs these tests, and tears everything down.
+``OPENSEARCH_PASSWORD`` variables as ``test_opensearch_client.py`` and are skipped
+when any is unset. ``tests/functional/run.sh`` starts an ephemeral Docker cluster,
+sets them, runs these tests, and tears everything down.
 """
 
 import logging
