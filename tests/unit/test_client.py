@@ -110,6 +110,28 @@ def test_index_exists_maps_200_and_404_and_propagates_other_errors() -> None:
     assert not err and err.status == 401  # a non-404 failure is not "does not exist"
 
 
+def test_ensure_index_creates_a_missing_index_and_reports_failures() -> None:
+    created = Success({"acknowledged": True})
+    missing = Failure("not found", status=404)
+    # (what the cluster answers, whether the call succeeds, data, requests made)
+    cases: list[tuple[str, list[OpensearchResult[Any]], bool, bool | None, int]] = [
+        ("already exists", [Success({})], True, False, 1),
+        ("missing, then created", [missing, created], True, True, 2),
+        ("existence check fails", [Failure("denied", status=401)], False, None, 1),
+        ("creation fails", [missing, Failure("blocked", status=403)], False, None, 2),
+    ]
+
+    for label, answers, succeeds, expected_data, requests in cases:
+        transport = _SeqTransport(*answers)
+        result = OpensearchClient(transport).ensure_index("logs")
+        assert bool(result) is succeeds, label
+        if succeeds:
+            assert result.data is expected_data, label
+        else:
+            assert result.status in (401, 403), label
+        assert transport.calls == requests, label
+
+
 def test_list_indices_extracts_and_sorts_names() -> None:
     rows = [{"index": "b-2"}, {"index": "a-1"}]
     got = OpensearchClient(FakeTransport(Success(rows))).list_indices("x-*")

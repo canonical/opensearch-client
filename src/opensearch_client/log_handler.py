@@ -403,22 +403,6 @@ class OpensearchLogHandler(logging.Handler):
         self._flush_thread.join(_CLOSE_JOIN_SECONDS)
         super().close()
 
-    def _ensure_index(self, index: str) -> bool:
-        """Create the index if it does not exist yet.
-
-        Args:
-            index (str): the index to check or create.
-
-        Returns:
-            bool: True if the index exists or was created, False on failure.
-        """
-        exists = self._client.index_exists(index)
-        if not exists:
-            return False
-        if exists.data:
-            return True
-        return bool(self._client.create_index({}, index))
-
     def _run_flush_loop(self) -> None:
         """Send the queue on the flush thread until ``close`` is called.
 
@@ -463,7 +447,7 @@ class OpensearchLogHandler(logging.Handler):
 
         try:
             if not self._index_ready:
-                self._index_ready = self._ensure_index(self.index)
+                self._index_ready = bool(self._client.ensure_index(self.index))
             result = self._client.bulk(documents, self.index, max_retries=_SEND_RETRIES)
         except Exception:
             with self._lock:
