@@ -175,6 +175,9 @@ The lifecycle verbs cover the common index-management operations:
   query otherwise returns nothing).
 - `exists` reports whether an index exists.
 - `list` lists indices matching `--pattern` (default: all).
+- `alias` shows the indices holding an alias (wildcards allowed) and each one's
+  alias properties, such as `is_write_index`. It exits non-zero when no index
+  holds the alias.
 - `delete` removes indices, and is a dry run unless `--apply`. `--index` deletes
   one concrete index, while `--pattern` deletes every matching index. The
   pattern dry run lists exactly which indices would be deleted.
@@ -190,6 +193,7 @@ The lifecycle verbs cover the common index-management operations:
 os-cli index refresh --index hunt-001
 os-cli index exists  --index hunt-001
 os-cli index list --pattern "triage-*"
+os-cli index alias logs-write                       # which index holds the write alias
 os-cli index delete  --index hunt-001 --apply
 os-cli index delete  --pattern "scratch-*"          # dry run: lists the matches
 os-cli index delete  --pattern "scratch-*" --apply

@@ -524,6 +524,10 @@ class OpensearchClient:
             return res
         return Success(sorted(row["index"] for row in res.data))
 
+    def get_alias(self, name: str) -> OpensearchResult[dict[str, Any]]:
+        """Get the indices holding an alias (``GET _alias/<name>``, wildcards allowed)."""
+        return self.request("GET", f"_alias/{name}")
+
     def rollover(
         self,
         alias: str,

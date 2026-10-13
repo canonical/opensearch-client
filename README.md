@@ -39,7 +39,7 @@ Runtime dependencies: `requests`, `PyYAML`.
 
 The client currently covers single-document and bulk indexing, search, SQL and
 PPL, counts, mappings, versions, index creation and lifecycle (refresh, delete,
-exists, list, rollover), index templates, reindex, update-by-query, and task polling, over
+exists, list, rollover), aliases, index templates, reindex, update-by-query, and task polling, over
 a direct or dashboard-proxy transport with server-certificate verification. The
 following capabilities are planned but not yet implemented:
 
