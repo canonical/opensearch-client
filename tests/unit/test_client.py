@@ -1,13 +1,18 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.client.OpensearchClient."""
+"""Unit tests for opensearch_client.client.OpensearchClient."""
 
 import json
 from typing import Any
 
-from osclient.client import BulkItem, DEFAULT_INDEX, OpensearchClient, _pack_batches
-from osclient.result import Failure, OpensearchResult, Success
+from opensearch_client.client import (
+    BulkItem,
+    DEFAULT_INDEX,
+    OpensearchClient,
+    _pack_batches,
+)
+from opensearch_client.result import Failure, OpensearchResult, Success
 
 
 class FakeTransport:

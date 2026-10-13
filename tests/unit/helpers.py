@@ -10,9 +10,9 @@ from argparse import ArgumentParser
 from types import ModuleType
 from typing import Any
 
-from osclient.client import OpensearchClient
-from osclient.result import OpensearchResult, Success
-from osclient.transport import Transport
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import OpensearchResult, Success
+from opensearch_client.transport import Transport
 
 
 class RecordingTransport:
@@ -58,7 +58,7 @@ class ScriptedTransport:
 def run_cli(
     module: ModuleType, command: str, argv: list[str], transport: Transport
 ) -> str:
-    """Parse argv as an ``osclient <command>`` command, run it, return stdout."""
+    """Parse argv as an ``opensearch_client <command>`` command, run it, return stdout."""
     parser = ArgumentParser()
     module.add_subparser(parser.add_subparsers(dest="subcommand"))
     args = parser.parse_args([command, *argv])

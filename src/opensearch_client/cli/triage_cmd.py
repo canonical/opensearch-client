@@ -1,9 +1,9 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""The ``osclient triage`` subcommand: layered triage of a copied log index.
+"""The ``os-cli triage`` subcommand: layered triage of a copied log index.
 
-Thin CLI over :mod:`osclient.triage`. Builds the client from the OPENSEARCH_*
+Thin CLI over :mod:`opensearch_client.triage`. Builds the client from the OPENSEARCH_*
 environment variables, dispatches the chosen triage subcommand, and prints its
 result as YAML (or the failure reason to stderr, exiting non-zero).
 
@@ -15,10 +15,10 @@ wildcard) index by accident.
 import sys
 from argparse import Namespace, _SubParsersAction
 
-from osclient import triage
-from osclient.cli.diagnostics import diagnose
-from osclient.cli.io import add_format_argument, render, resolve_source
-from osclient.client import OpensearchClient
+from opensearch_client import triage
+from opensearch_client.cli.diagnostics import diagnose
+from opensearch_client.cli.io import add_format_argument, render, resolve_source
+from opensearch_client.client import OpensearchClient
 
 NAME = "triage"
 

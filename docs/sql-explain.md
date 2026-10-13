@@ -1,11 +1,11 @@
 # SQL `_explain` and predicate push-down
 
-`osclient triage eliminate` turns a SQL `WHERE` predicate into the OpenSearch
+`os-cli triage eliminate` turns a SQL `WHERE` predicate into the OpenSearch
 query DSL it compiles to, so the same filter can be counted and then applied by
 a single server-side `_update_by_query`. It recovers that DSL by asking the SQL
 engine to *explain* the query and pulling the pushed-down search body out of the
 plan. This note documents the `_explain` output that the parsing in
-`osclient.triage` (`where_to_dsl`, `_find_pushed_down_request`,
+`opensearch_client.triage` (`where_to_dsl`, `_find_pushed_down_request`,
 `_extract_json_object`) relies on.
 
 ## What `_explain` returns

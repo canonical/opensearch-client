@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 from helpers import RecordingTransport, ScriptedTransport
 
-from osclient import security
-from osclient.client import OpensearchClient
-from osclient.result import Failure, OpensearchResult, Success
-from osclient.security import Role, RoleMapping, User
+from opensearch_client import security
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import Failure, OpensearchResult, Success
+from opensearch_client.security import Role, RoleMapping, User
 
 
 def test_the_request_bodies_hold_only_what_the_api_needs() -> None:

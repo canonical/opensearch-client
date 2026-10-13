@@ -1,6 +1,6 @@
 # Functional tests
 
-These run osclient against a real OpenSearch cluster; the unit tests
+These run opensearch_client against a real OpenSearch cluster; the unit tests
 (`tests/unit/`) use fakes and need nothing running.
 
 `run.sh` starts an ephemeral single-node OpenSearch via Docker Compose, waits for

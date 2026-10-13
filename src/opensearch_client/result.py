@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""The typed result every osclient call returns.
+"""The typed result every opensearch_client call returns.
 
 A call returns either a :class:`Success` carrying ``data`` or a :class:`Failure`
 carrying a ``reason``; :data:`OpensearchResult` is the union of the two, and both

@@ -7,9 +7,9 @@ import json
 from collections.abc import Iterable
 from typing import Any, NamedTuple
 
-from osclient.jdbc import rows_from_sql_response
-from osclient.result import Failure, OpensearchResult, Success
-from osclient.transport import REQUEST_TIMEOUT, Transport
+from opensearch_client.jdbc import rows_from_sql_response
+from opensearch_client.result import Failure, OpensearchResult, Success
+from opensearch_client.transport import REQUEST_TIMEOUT, Transport
 
 DEFAULT_INDEX = "*"
 
@@ -103,7 +103,7 @@ class OpensearchClient:
     Most operations funnel through :meth:`request`, which JSON-encodes the body
     and hands the bytes to the transport; :meth:`bulk` encodes newline-delimited
     JSON and sends it the same way. Each helper returns an
-    :class:`~osclient.result.OpensearchResult`.
+    :class:`~opensearch_client.result.OpensearchResult`.
 
     Index-scoped helpers (``search``, ``count``, ``create_index``, ...) target
     :attr:`default_index` unless an explicit ``index`` argument is given.

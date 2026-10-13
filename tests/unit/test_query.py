@@ -1,11 +1,11 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.cli.query helpers."""
+"""Unit tests for opensearch_client.cli.query helpers."""
 
 from argparse import Namespace
 
-from osclient.cli import query
+from opensearch_client.cli import query
 
 
 def _args(since=None, until=None, time_field="@timestamp") -> Namespace:

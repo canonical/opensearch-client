@@ -46,7 +46,7 @@ the other subcommands.
 
 from argparse import Namespace, _SubParsersAction
 
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 NAME = "security"
 

@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.triage.
+"""Unit tests for opensearch_client.triage.
 
 The functional tests (tests/functional/) drive init/eliminate/status against a
 real cluster, so these cover only what that layer cannot: the explain-plan
@@ -11,9 +11,9 @@ parsing, the dry-run and cross-check safety paths, and validation/errors.
 from argparse import Namespace
 from typing import Any
 
-from osclient import triage
-from osclient.client import OpensearchClient
-from osclient.result import Failure, OpensearchResult, Success
+from opensearch_client import triage
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import Failure, OpensearchResult, Success
 
 
 class FakeTransport:

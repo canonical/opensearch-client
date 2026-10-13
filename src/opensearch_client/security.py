@@ -55,8 +55,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
-from osclient.client import OpensearchClient
-from osclient.result import Failure, OpensearchResult, Success
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import Failure, OpensearchResult, Success
 
 # The API reads these in a role mapping's ``users`` as wildcards, so a user name
 # containing one would map the role to every user it matches.

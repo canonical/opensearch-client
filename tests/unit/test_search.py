@@ -1,11 +1,11 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.cli.search helpers."""
+"""Unit tests for opensearch_client.cli.search helpers."""
 
-from osclient.cli import search
-from osclient.client import OpensearchClient
-from osclient.result import OpensearchResult, Success
+from opensearch_client.cli import search
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import OpensearchResult, Success
 
 
 class _Transport:

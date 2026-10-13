@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""``osclient search``: find the newest documents matching exact FIELD=VALUE terms.
+"""``os-cli search``: find the newest documents matching exact FIELD=VALUE terms.
 
 A convenience term-lookup (not a query language): each FIELD=VALUE is an exact
 match, all ANDed, and the newest ``--count`` matches are returned most-recent
@@ -13,14 +13,14 @@ import sys
 from argparse import Namespace, _SubParsersAction
 from typing import Any
 
-from osclient.cli.diagnostics import diagnose
-from osclient.cli.io import (
+from opensearch_client.cli.diagnostics import diagnose
+from opensearch_client.cli.io import (
     add_format_argument,
     add_time_range_arguments,
     emit,
     time_range_filter,
 )
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 NAME = "search"
 
@@ -133,7 +133,7 @@ def run(args: Namespace, client: OpensearchClient) -> None:
         if unmapped:
             logging.warning(
                 "no matches: %s not mapped, so a term filter never matches them "
-                "(they may still be in _source); check `osclient index mapping ...`",
+                "(they may still be in _source); check `os-cli index mapping ...`",
                 ", ".join(repr(field) for field in unmapped),
             )
     emit(diagnose(result), label, args.format)

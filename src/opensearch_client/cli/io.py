@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from osclient.result import OpensearchResult
+from opensearch_client.result import OpensearchResult
 
 FORMATS = ("yaml", "json", "csv", "tsv")
 DEFAULT_FORMAT = "yaml"

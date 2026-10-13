@@ -6,7 +6,7 @@
 import os
 from typing import Any
 
-from osclient.result import Failure, OpensearchResult
+from opensearch_client.result import Failure, OpensearchResult
 
 
 def _diagnosis(result: OpensearchResult[Any]) -> str | None:
@@ -34,13 +34,13 @@ def _diagnosis(result: OpensearchResult[Any]) -> str | None:
         )
     if isinstance(error, dict) and error.get("type") == "index_not_found_exception":
         missing = error.get("index") or error.get("resource.id") or "?"
-        return f"index {missing!r} not found. Try 'osclient index list'."
+        return f"index {missing!r} not found. Try 'os-cli index list'."
     if "no handler found" in lowered and (
         "_plugins/_sql" in reason or "_plugins/_ppl" in reason
     ):
         return (
             "the SQL/PPL plugin does not appear to be installed; check with "
-            "`osclient cluster versions`."
+            "`os-cli cluster versions`."
         )
     if result.status is None and "timed out" in lowered:
         return (

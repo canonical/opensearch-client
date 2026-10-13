@@ -3,7 +3,7 @@
 
 """Build an OpensearchClient from the ``OPENSEARCH_*`` environment variables.
 
-The core :class:`~osclient.client.OpensearchClient` takes an explicit transport;
+The core :class:`~opensearch_client.client.OpensearchClient` takes an explicit transport;
 this helper assembles one from the environment. Two families of connection
 variables name an endpoint:
 
@@ -37,8 +37,8 @@ import sys
 
 import urllib3  # pyright: ignore[reportMissingImports]
 
-from osclient.client import DEFAULT_INDEX, OpensearchClient
-from osclient.transport import (
+from opensearch_client.client import DEFAULT_INDEX, OpensearchClient
+from opensearch_client.transport import (
     DirectTransport,
     FailoverTransport,
     ProbeTransport,

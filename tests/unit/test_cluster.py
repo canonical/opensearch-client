@@ -1,12 +1,12 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.cli.cluster."""
+"""Unit tests for opensearch_client.cli.cluster."""
 
 import yaml
 from helpers import RecordingTransport, run_cli
 
-from osclient.cli import cluster
+from opensearch_client.cli import cluster
 
 
 def test_delete_template_dry_run_reports_patterns_without_deleting() -> None:

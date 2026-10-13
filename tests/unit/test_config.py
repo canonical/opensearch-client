@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.config.client_from_env.
+"""Unit tests for opensearch_client.config.client_from_env.
 
 Transport selection is driven by which OPENSEARCH_* variables are set. Each test
 sets an explicit, isolated environment and restores it afterward.
@@ -11,9 +11,13 @@ import contextlib
 import os
 from typing import Iterator
 
-from osclient.client import OpensearchClient
-from osclient.config import client_from_env
-from osclient.transport import FailoverTransport, ProbeTransport, ProxyTransport
+from opensearch_client.client import OpensearchClient
+from opensearch_client.config import client_from_env
+from opensearch_client.transport import (
+    FailoverTransport,
+    ProbeTransport,
+    ProxyTransport,
+)
 
 _OS_KEYS = [
     "OPENSEARCH_URL",

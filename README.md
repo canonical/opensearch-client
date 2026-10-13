@@ -20,12 +20,12 @@ Runtime dependencies: `requests`, `PyYAML`.
 
 ## Overview
 
-`osclient` provides:
+`opensearch_client` provides:
 
 - a Python library for querying an OpenSearch cluster (directly, or through a
   dashboard console proxy as a fallback), where every call returns an
   `OpensearchResult` (`ok` / `data` / `reason`) rather than raising; and
-- an `osclient` command-line tool
+- an `os-cli` command-line tool
 
 ## Documentation
 

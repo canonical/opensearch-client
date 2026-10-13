@@ -6,13 +6,13 @@ Every call returns an `OpensearchResult` rather than raising. Each is a
 `Success` or a `Failure`, read as one union type with the fields `ok` / `data` /
 `reason` / `status`. An HTTP error, transport error, or bad response body comes
 back as a `Failure` with a `reason`. For each field's exact meaning, see the
-`Success` and `Failure` docstrings in `osclient.result`.
+`Success` and `Failure` docstrings in `opensearch_client.result`.
 
 A result is truthy when it succeeded, so `if res:` (or `if not res:`,
 `assert res`) both branches and narrows `data` to be present:
 
 ```python
-from osclient import OpensearchClient, client_from_env
+from opensearch_client import OpensearchClient, client_from_env
 
 client = client_from_env()   # reads OPENSEARCH_* (or None if unset)
 res = client.sql("SELECT rule.level FROM logs-* LIMIT 5")
@@ -26,7 +26,7 @@ else:
 You can also pattern-match, which narrows the same way:
 
 ```python
-from osclient import Success, Failure
+from opensearch_client import Success, Failure
 
 match client.sql("SELECT rule.level FROM logs-* LIMIT 5"):
     case Success(rows):
@@ -131,7 +131,7 @@ Two transports compose the two when the endpoint type is uncertain:
   (a transport error), not on an HTTP error status from a reachable server.
 
 ```python
-from osclient import OpensearchClient, DirectTransport
+from opensearch_client import OpensearchClient, DirectTransport
 
 transport = DirectTransport("https://host:9200", ("user", "pass"), verify="/etc/ssl/ca.pem")
 client = OpensearchClient(transport, default_index="logs-*")

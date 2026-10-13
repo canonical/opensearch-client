@@ -3,7 +3,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 #
-# Run the osclient functional tests against an ephemeral Docker OpenSearch.
+# Run the opensearch_client functional tests against an ephemeral Docker OpenSearch.
 #
 # The same script is used locally and in CI so the two behave identically: it
 # starts a single-node OpenSearch, waits for it to answer, runs the tests through
@@ -21,7 +21,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-PROJECT="osclient-functional"
+PROJECT="opensearch_client-functional"
 URL="http://localhost:9200"
 KEEP_IMAGE="${KEEP_IMAGE:-1}"
 

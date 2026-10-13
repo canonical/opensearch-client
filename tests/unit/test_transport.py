@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.transport.
+"""Unit tests for opensearch_client.transport.
 
 Each transport builds a request and turns the response into a result. Tests
 replace the transport's ``session`` with an explicit recorder (no magic fixtures).
@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from osclient.transport import (
+from opensearch_client.transport import (
     DirectTransport,
     FailoverTransport,
     ProbeTransport,

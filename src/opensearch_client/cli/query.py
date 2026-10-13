@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""``osclient query``: run a query in a chosen language against the cluster.
+"""``os-cli query``: run a query in a chosen language against the cluster.
 
 One verb per invocation, each printing its result as YAML by default:
   query sql <query>   run an OpenSearch SQL query (--explain shows the plan)
@@ -12,7 +12,7 @@ Each <query> may be given literally, as ``-`` to read it from stdin, or as
 ``@PATH`` to read it from a file.
 
 Connection is read from the OPENSEARCH_* environment variables (see
-osclient.config) so the password never lands in shell history.
+opensearch_client.config) so the password never lands in shell history.
 """
 
 import json
@@ -21,8 +21,8 @@ import sys
 from argparse import Namespace, _SubParsersAction
 from typing import Any
 
-from osclient.cli.diagnostics import diagnose
-from osclient.cli.io import (
+from opensearch_client.cli.diagnostics import diagnose
+from opensearch_client.cli.io import (
     add_format_argument,
     add_time_range_arguments,
     emit,
@@ -30,7 +30,7 @@ from osclient.cli.io import (
     resolve_time,
     time_range_filter,
 )
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 NAME = "query"
 

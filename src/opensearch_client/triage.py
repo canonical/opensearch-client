@@ -14,8 +14,8 @@ from argparse import Namespace
 from datetime import datetime, timezone
 from typing import Any
 
-from osclient.client import OpensearchClient
-from osclient.result import Failure, OpensearchResult, Success
+from opensearch_client.client import OpensearchClient
+from opensearch_client.result import Failure, OpensearchResult, Success
 
 # The untriaged sentinel. init tags every copied document with this; eliminate
 # only ever matches documents still holding it.

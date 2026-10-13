@@ -15,7 +15,7 @@ Two ways to reach a cluster, behind one ``request`` interface:
 the primary is unreachable (a transport error, not an HTTP error status from a
 reachable server), retries the same request through the fallback.
 
-Every ``request`` returns an :class:`~osclient.result.OpensearchResult` rather
+Every ``request`` returns an :class:`~opensearch_client.result.OpensearchResult` rather
 than raising: a transport error, a non-ok status, or an unparseable body all come
 back as ``ok=False`` with a reason.
 """
@@ -25,7 +25,7 @@ from typing import Any, Protocol
 
 import requests
 
-from osclient.result import Failure, OpensearchResult, Success
+from opensearch_client.result import Failure, OpensearchResult, Success
 
 PROXY_PATH = "/api/console/proxy"
 REQUEST_TIMEOUT = 30

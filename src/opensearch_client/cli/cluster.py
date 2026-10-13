@@ -1,22 +1,22 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""``osclient cluster``: cluster-level inspection and resource management."""
+"""``os-cli cluster``: cluster-level inspection and resource management."""
 
 import logging
 import sys
 from argparse import Namespace, _SubParsersAction
 from typing import Any
 
-from osclient.cli.diagnostics import diagnose
-from osclient.cli.io import (
+from opensearch_client.cli.diagnostics import diagnose
+from opensearch_client.cli.io import (
     add_format_argument,
     emit,
     parse_json_object,
     render,
     resolve_source,
 )
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 NAME = "cluster"
 

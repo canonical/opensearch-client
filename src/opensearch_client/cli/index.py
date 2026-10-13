@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""``osclient index``: index-level operations (mapping, bulk, lifecycle)."""
+"""``os-cli index``: index-level operations (mapping, bulk, lifecycle)."""
 
 import json
 import logging
@@ -11,15 +11,15 @@ from typing import Any
 
 import yaml
 
-from osclient.cli.diagnostics import diagnose
-from osclient.cli.io import (
+from opensearch_client.cli.diagnostics import diagnose
+from opensearch_client.cli.io import (
     add_format_argument,
     emit,
     parse_json_object,
     render,
     resolve_source,
 )
-from osclient.client import OpensearchClient
+from opensearch_client.client import OpensearchClient
 
 NAME = "index"
 
