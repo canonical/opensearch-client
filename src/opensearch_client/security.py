@@ -3,10 +3,8 @@
 
 """Manage Security plugin accounts: roles, internal users and role mappings.
 
-SKELETON: some functions below are declarations with no behaviour yet.
-
 This module calls the Security REST API through
-:meth:`~osclient.client.OpensearchClient.request`; the client has no methods of its
+:meth:`~opensearch_client.client.OpensearchClient.request`; the client has no methods of its
 own for it, and the API paths live here. Two parts:
 
 - The classes model the request bodies this module sends, and only the fields a
@@ -14,7 +12,7 @@ own for it, and the API paths live here. Two parts:
   keys. ``to_dict`` builds a request body. Responses are not parsed into these
   classes: the ``get_*`` and ``list_*`` functions return the response JSON.
 - The functions work with those classes and return
-  :class:`~osclient.result.OpensearchResult`; an expected failure is a value, not
+  :class:`~opensearch_client.result.OpensearchResult`; an expected failure is a value, not
   an exception.
 
 Documentation of the API, which these docstrings were checked against:
@@ -295,22 +293,46 @@ def _path(base: str, name: str) -> str:
     return f"{base}/{quote(name, safe='')}"
 
 
+REDACTED = "<redacted>"
+
+# Keys whose values must never be printed or logged, wherever they appear in a
+# response (compared in lower case):
+# - password: write-only; the API never returns it, but a request body carries it.
+# - hash: the stored password hash. The API normally returns it empty, but a
+#   response could contain one, and a hash can be attacked offline.
+# Not redacted, but worth a decision: a user's ``attributes`` are free-form
+# name-value pairs and could hold anything.
+SENSITIVE_KEYS = frozenset({"password", "hash"})
+
+
 # -- output -------------------------------------------------------------------
 
 
 def redact_secrets(data: Any) -> Any:
     """Return a copy of an API response with every secret value replaced.
 
-    Every value under a key in ``SENSITIVE_KEYS`` becomes ``REDACTED``, at any
-    depth in nested dicts and lists. The input is not changed.
+    Every value under a key in ``SENSITIVE_KEYS`` becomes ``REDACTED``, whatever
+    its type, at any depth in nested dicts and lists. Keys are compared in lower
+    case, so a free-form name such as ``Password`` in a user's attributes is
+    redacted too. The input is not changed.
 
     Args:
         data: a decoded API response: a dict, a list, or a scalar.
 
     Returns:
-        The same structure with the sensitive values replaced.
+        The same structure with the sensitive values replaced; a scalar is
+        returned as it is.
     """
-    raise NotImplementedError
+    if isinstance(data, dict):
+        return {
+            key: REDACTED
+            if isinstance(key, str) and key.lower() in SENSITIVE_KEYS
+            else redact_secrets(value)
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [redact_secrets(item) for item in data]
+    return data
 
 
 # -- build ------------------------------------------------------------------

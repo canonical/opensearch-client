@@ -1,8 +1,9 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for osclient.security."""
+"""Unit tests for opensearch_client.security."""
 
+import copy
 import re
 from collections.abc import Callable
 from typing import Any
@@ -404,3 +405,35 @@ def test_check_service_account_refuses_input_that_would_not_name_one_object() ->
         OpensearchClient(transport), "example-user", "example-role", "a/b c"
     )
     assert transport.calls[-1] == ("GET", "a%2Fb%20c", None)
+
+
+def test_redact_secrets_replaces_every_secret_and_leaves_the_input_alone() -> None:
+    response: dict[str, Any] = {
+        "example-user": {
+            "hash": "$2y$12$not-a-real-hash",
+            "password": "a-secret-value",
+            "backend_roles": ["example"],
+            "attributes": {"Password": "another-secret", "team": "ops"},
+        },
+        "other-user": [{"hash": ""}, "plain", 5, None],
+    }
+    original = copy.deepcopy(response)
+
+    redacted = security.redact_secrets(response)
+
+    assert redacted == {
+        "example-user": {
+            "hash": security.REDACTED,
+            "password": security.REDACTED,
+            "backend_roles": ["example"],
+            "attributes": {"Password": security.REDACTED, "team": "ops"},
+        },
+        "other-user": [{"hash": security.REDACTED}, "plain", 5, None],
+    }
+    assert response == original
+
+    # A scalar is returned as it is, and a secret is hidden whatever its type.
+    assert security.redact_secrets("text") == "text"
+    assert security.redact_secrets({"password": {"nested": "x"}}) == {
+        "password": security.REDACTED
+    }

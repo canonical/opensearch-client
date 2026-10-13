@@ -4,7 +4,7 @@
 """The ``security`` subcommand: roles, internal users and role mappings.
 
 SKELETON: the functions below are declarations with no behaviour, and this
-module is not registered in ``main.py`` yet. Thin CLI over :mod:`osclient.security`.
+module is not registered in ``main.py`` yet. Thin CLI over :mod:`opensearch_client.security`.
 
 The planned grammar (``SOURCE`` is JSON given as ``@PATH``, ``-`` for stdin, or
 literal text, as in the other subcommands)::
@@ -35,7 +35,7 @@ unchanged. A password is only ever read from a file or from stdin
 never generated.
 
 The show verbs print the server's raw JSON (``client.get`` on the API path), after
-passing it through :func:`osclient.security.redact_secrets`, so a password or hash
+passing it through :func:`opensearch_client.security.redact_secrets`, so a password or hash
 is never displayed. This keeps fields the typed classes do not model. Decision to
 revisit: print the typed classes instead. The create verbs print only the API's
 acknowledgement and never echo the request body, which holds a password.
