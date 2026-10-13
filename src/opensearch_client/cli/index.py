@@ -158,6 +158,15 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     )
     add_format_argument(rollover)
 
+    alias = operations.add_parser(
+        "alias",
+        help="show the indices holding an alias",
+    )
+    alias.add_argument(
+        "name", metavar="NAME", help="the alias to look up, wildcards allowed"
+    )
+    add_format_argument(alias)
+
     listing = operations.add_parser("list", help="list indices matching a pattern")
     listing.add_argument(
         "--pattern", default="*", help="index-name pattern to list (default: all)"
@@ -304,5 +313,7 @@ def run(args: Namespace, client: OpensearchClient) -> None:
                 sys.exit(2)
         result = client.rollover(args.alias, settings=settings, dry_run=not args.apply)
         emit(diagnose(result), "Rollover", args.format)
+    elif args.operation == "alias":
+        emit(diagnose(client.get_alias(args.name)), "Alias", args.format)
     elif args.operation == "list":
         emit(diagnose(client.list_indices(args.pattern)), "List", args.format)
