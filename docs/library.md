@@ -164,3 +164,10 @@ variables are set:
 - **only `OPENSEARCH_DASHBOARD_*`**: the endpoint is a dashboard proxy.
 - **both**: connect directly, falling back to the dashboard proxy when the
   direct endpoint is unreachable.
+
+`client_from_env(direct_only=True)` instead connects only to the endpoint in
+`OPENSEARCH_URL` or `OPENSEARCH_HOST`, ignoring the `OPENSEARCH_DASHBOARD_*`
+variables, and returns `None` if there is no such endpoint. Use it when a first
+request may legitimately get an HTTP error such as a 404, which a probe would
+read as "no direct endpoint", or when requests must not go through a proxy. The
+`os-cli security` command does.

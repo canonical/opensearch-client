@@ -7,13 +7,20 @@ import logging
 import sys
 from argparse import ArgumentParser
 
-from opensearch_client.cli import cluster, index, query, search, triage_cmd
+from opensearch_client.cli import (
+    cluster,
+    index,
+    query,
+    search,
+    security_cmd,
+    triage_cmd,
+)
 from opensearch_client.config import client_from_env
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # Each command module exposes NAME, add_subparser(subparsers) and run(args, client).
-_COMMANDS = (query, search, index, cluster, triage_cmd)
+_COMMANDS = (query, search, index, cluster, security_cmd, triage_cmd)
 
 
 def main() -> None:
@@ -30,7 +37,11 @@ def main() -> None:
         command.add_subparser(subparsers)
 
     args = parser.parse_args()
-    client = client_from_env(insecure=args.insecure)
+    # The security commands talk to the cluster's REST port directly: a probe would
+    # read the 404 of an existence check as "no direct endpoint".
+    client = client_from_env(
+        insecure=args.insecure, direct_only=args.subcommand == security_cmd.NAME
+    )
     if client is None:
         sys.exit(2)
     for command in _COMMANDS:
