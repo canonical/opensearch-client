@@ -138,6 +138,27 @@ class BlockingCluster(FakeCluster):
         return super().request(method, path, body, content_type, timeout)
 
 
+class SlowCluster(FakeCluster):
+    """A FakeCluster that takes a moment to answer every bulk request."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.send_started = threading.Event()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
+        if path == "_bulk":
+            self.send_started.set()
+            time.sleep(0.3)
+        return super().request(method, path, body, content_type, timeout)
+
+
 class ErrorRecordingHandler(OpensearchLogHandler):
     """Keeps the records passed to handleError instead of printing a traceback."""
 
@@ -321,6 +342,22 @@ def test_queued_records_are_sent_without_an_explicit_flush() -> None:
 
             assert cluster.bulk_received.wait(_WAIT_SECONDS), f"not sent: {settings}"
             assert len(cluster.documents) == record_count
+
+
+def test_flush_returns_only_once_the_records_queued_before_it_are_sent() -> None:
+    """A send already running when flush is called may not hold every record.
+
+    flush must wait for the send after it, not return when the running one ends.
+    """
+    cluster = SlowCluster()
+    with _running(_handler(cluster, flush_threshold=1)) as handler:
+        handler.emit(_record("a"))
+        assert cluster.send_started.wait(_WAIT_SECONDS), "the send never started"
+        handler.emit(_record("b"))  # queued while "a" is being sent
+
+        handler.flush()
+
+        assert [document["message"] for document in cluster.documents] == ["a", "b"]
 
 
 def test_send_path_records_are_ignored_and_a_locked_flush_does_not_stall() -> None:

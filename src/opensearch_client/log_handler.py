@@ -191,8 +191,8 @@ class ECSLogFormatter(logging.Formatter):
         """
         timestamp = datetime.fromtimestamp(record.created, timezone.utc)
         fields: dict[str, Any] = {
-            "@timestamp": timestamp.isoformat(timespec="milliseconds").replace(
-                "+00:00", "Z"
+            "@timestamp": (
+                timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
             ),
             "message": record.getMessage(),
             "log": {
@@ -310,16 +310,21 @@ class OpensearchLogHandler(logging.Handler):
         self.index = index
         self._index_ready = False
 
-        # Guards _buffer, _dropped, and _backing_off. Held only for quick
-        # updates, never while sending, so a slow send does not block logging.
+        # Guards _buffer, _dropped, _backing_off and the send counters. Held only
+        # for quick updates, never while sending, so a slow send does not block
+        # logging.
         self._lock = Lock()
-        self._flush_condition = Condition(self._lock)
 
         self._buffer: deque[dict[str, Any]] = deque()
         self.flush_threshold = flush_threshold
         self.buffer_limit = buffer_limit
         self._dropped = 0
         self._backing_off = False
+        # Counted by the flush thread, so that flush can wait for a send that
+        # started after it was called, and therefore holds its records.
+        self._sends_started = 0
+        self._sends_finished = 0
+        self._send_finished = Condition(self._lock)
 
         self.setFormatter(ECSLogFormatter())
 
@@ -371,14 +376,21 @@ class OpensearchLogHandler(logging.Handler):
     def flush(self) -> None:
         """Ask the flush thread to send the queue now, and wait for it to finish.
 
-        This tries again even while the handler is waiting after a failed send.
-        Waits at most 10 seconds, and returns at once if the handler is closed.
+        Every record queued before the call is in the send that ``flush`` waits
+        for. This tries again even while the handler is waiting after a failed
+        send. Waits at most 10 seconds, and returns at once if the handler is
+        closed.
         """
         if not self._flush_thread.is_alive():
             return
-        with self._flush_condition:
+        with self._send_finished:
+            # A send already running may have taken the buffer before this call,
+            # so wait for the next one to start.
+            awaited_send = self._sends_started + 1
             self._wake_flush_thread.set()
-            self._flush_condition.wait(_FLUSH_WAIT_SECONDS)
+            self._send_finished.wait_for(
+                lambda: self._sends_finished >= awaited_send, _FLUSH_WAIT_SECONDS
+            )
 
     def close(self) -> None:
         """Stop the flush thread after its final send, then close the handler.
@@ -418,14 +430,17 @@ class OpensearchLogHandler(logging.Handler):
             self._wake_flush_thread.wait(self.flush_interval)
             self._wake_flush_thread.clear()
             stopping = self._stop_event.is_set()
+            with self._lock:
+                self._sends_started += 1
             try:
                 self._send_buffered()
             except Exception:  # noqa: BLE001
                 # This handler ignores records logged on its own thread, so
                 # reporting here cannot feed back into the queue.
                 logger.exception("sending buffered log records failed")
-            with self._flush_condition:
-                self._flush_condition.notify_all()
+            with self._send_finished:
+                self._sends_finished += 1
+                self._send_finished.notify_all()
             if stopping:
                 with self._lock:
                     self._dropped += len(self._buffer)
