@@ -20,7 +20,11 @@ from typing import Any
 import pytest
 
 from opensearch_client.client import OpensearchClient
-from opensearch_client.log_handler import ECSLogFormatter, OpensearchLogHandler
+from opensearch_client.log_handler import (
+    ECSLogContextFilter,
+    ECSLogFormatter,
+    OpensearchLogHandler,
+)
 from opensearch_client.result import Failure, OpensearchResult, Success
 
 # How long the tests wait on another thread before deciding it is stuck. Only
@@ -193,8 +197,9 @@ def test_emit_queues_ecs_documents_and_contains_bad_records() -> None:
     )
 
     with _running(handler):
-        handler.emit(bad)
-        handler.emit(good)
+        # handle runs the handler's filters, which add the service and host fields
+        handler.handle(bad)
+        handler.handle(good)
         handler.flush()
 
         assert handler.errored_records == [bad]
@@ -219,9 +224,11 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         "event": {"dataset": "custom-dataset"},
         "log": {"level": "OVERRIDE"},
     }
-    handler = _handler(cluster)
-    handler.setFormatter(
-        ECSLogFormatter(service_name="superset", extra_fields=extra_fields)
+    handler = _handler(
+        cluster,
+        context_filter=ECSLogContextFilter(
+            service_name="superset", extra_fields=extra_fields
+        ),
     )
     extra = {"collector": "superset", "batch.size": 3, "skipped": None}
     first = _record("one", extra)
@@ -230,8 +237,8 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
     second.stack_info = "Stack (most recent call last):\n  File x, line 1"
 
     with _running(handler):
-        handler.emit(first)
-        handler.emit(second)
+        handler.handle(first)
+        handler.handle(second)
         handler.flush()
 
         first_document, second_document = cluster.documents
@@ -257,12 +264,17 @@ def test_documents_carry_identity_labels_and_merged_extra_fields() -> None:
         assert second_document["labels"] == {"env": "test"}
 
 
-def test_format_returns_the_document_as_json_text() -> None:
-    """For any other handler, format returns the same document as JSON text."""
-    formatter = ECSLogFormatter(service_name="custom")
+def test_the_filter_and_formatter_work_with_any_handler() -> None:
+    """The filter adds the context, and format returns the document as JSON text."""
+    context_filter = ECSLogContextFilter(service_name="custom")
+    formatter = ECSLogFormatter()
     record = _record("hello")
 
-    assert json.loads(formatter.format(record)) == formatter.format_document(record)
+    assert context_filter.filter(record)
+    document = json.loads(formatter.format(record))
+
+    assert document["service"]["name"] == "custom"
+    assert document == formatter.format_document(record)
 
 
 def test_stalled_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:

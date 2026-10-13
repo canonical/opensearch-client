@@ -12,7 +12,8 @@ what a log handler needs on top of it:
 - a bounded in-memory buffer, so logging never blocks on the network;
 - a background thread that flushes the buffer by size or by interval;
 - a final flush on shutdown, so the last records are not lost;
-- an ``ECSLogFormatter`` that converts a ``LogRecord`` into an ECS-style document;
+- an ``ECSLogFormatter`` that converts a ``LogRecord`` into an ECS-style document,
+  and an ``ECSLogContextFilter`` that adds the host and service context to it;
 - a guarantee that a shipping failure never raises into the application and
   never feeds back into the handler itself.
 """
@@ -51,18 +52,37 @@ _TEMPORARY_ERROR_TYPES = ("cluster_block_exception", "index_not_found_exception"
 _ECS_VERSION = "9.0"
 
 # Every attribute a LogRecord has, so that anything else on a record is known to
-# have come from ``extra=``.
+# have come from ``extra=``. ``ecs_context`` is set by ECSLogContextFilter.
 _STANDARD_RECORD_ATTRIBUTES = frozenset(
     vars(logging.LogRecord("", 0, "", 0, "", (), None))
-) | {"message", "asctime"}
+) | {"message", "asctime", "ecs_context"}
 
 
-class ECSLogFormatter(logging.Formatter):
-    """Format log records as ECS documents.
+def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Merge ``source`` into ``target``, descending into nested dicts.
 
-    ``format_document`` returns a document as a dict, which is what
-    ``OpensearchLogHandler`` queues. ``format`` returns the same document as JSON
-    text, so the formatter also works with any other handler.
+    Where both hold a dict under the same key their contents are merged. Anything
+    else in ``source`` replaces what ``target`` has.
+
+    Args:
+        target (dict[str, Any]): the dict to update.
+        source (dict[str, Any]): the values to merge in.
+    """
+    for key, value in source.items():
+        existing = target.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            _deep_merge(existing, value)
+        else:
+            target[key] = value
+
+
+class ECSLogContextFilter(logging.Filter):
+    """Add the context the logs come from to every record.
+
+    The context is what describes where the logs come from, not what was logged:
+    ``host.name``, ``service.name``, ``service.ephemeral_id``, ``event.dataset``
+    and the caller's ``extra_fields``. The filter sets it on the record as
+    ``ecs_context``, and :class:`ECSLogFormatter` merges it into the document.
     """
 
     def __init__(
@@ -71,7 +91,7 @@ class ECSLogFormatter(logging.Formatter):
         service_name: str | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
-        """Create the formatter.
+        """Create the filter.
 
         Args:
             service_name (str | None): the name of the service that is producing the
@@ -94,8 +114,7 @@ class ECSLogFormatter(logging.Formatter):
             else:
                 service_name = "unknown_service"
 
-        self._static_document: dict[str, Any] = {
-            "ecs": {"version": _ECS_VERSION},
+        self._context: dict[str, Any] = {
             "host": {"name": socket.gethostname()},
             # systemd sets INVOCATION_ID to a new value each time the unit starts.
             "service": {
@@ -103,9 +122,31 @@ class ECSLogFormatter(logging.Formatter):
                 "ephemeral_id": os.environ.get("INVOCATION_ID") or uuid.uuid4().hex,
             },
             "event": {"dataset": service_name},
-            "agent": {"type": "opensearch_client"},
         }
-        self._deep_merge(self._static_document, extra_fields or {})
+        _deep_merge(self._context, extra_fields or {})
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Set the context on the record, and let the record through.
+
+        Args:
+            record (logging.LogRecord): the record to add the context to.
+
+        Returns:
+            bool: always True.
+        """
+        setattr(record, "ecs_context", self._context)
+        return True
+
+
+class ECSLogFormatter(logging.Formatter):
+    """Format log records as ECS documents.
+
+    ``format_document`` returns a document as a dict, which is what
+    ``OpensearchLogHandler`` queues. ``format`` returns the same document as JSON
+    text, so the formatter also works with any other handler. The document gets
+    its host and service fields from the ``ecs_context`` that an
+    :class:`ECSLogContextFilter` sets on the record, so add one to the handler.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         """Return the record's ECS document as JSON text.
@@ -135,12 +176,12 @@ class ECSLogFormatter(logging.Formatter):
         - ``python.msg`` (the format string), ``python.pathname`` (the full path,
           since file names repeat across programs) and ``python.task_name``.
 
-        It then merges in the fields every document shares: ``ecs.version``,
-        ``host.name``, ``service.name``, ``service.ephemeral_id``,
-        ``event.dataset``, ``agent.type``, and the caller's ``extra_fields``. Where
-        a shared field has the same name as one from the record, the shared field
-        wins. The ``extra_fields`` are assumed to be ECS compliant, and are not
-        reformatted.
+        It adds ``ecs.version`` and ``agent.type``, then merges in the record's
+        ``ecs_context``, if an ``ECSLogContextFilter`` set one: ``host.name``,
+        ``service.name``, ``service.ephemeral_id``, ``event.dataset`` and the
+        caller's ``extra_fields``. Where a context field has the same name as
+        another field, the context field wins. The ``extra_fields`` are assumed to
+        be ECS compliant, and are not reformatted.
 
         Args:
             record (logging.LogRecord): the record to convert.
@@ -162,6 +203,8 @@ class ECSLogFormatter(logging.Formatter):
                     "function": record.funcName,
                 },
             },
+            "ecs": {"version": _ECS_VERSION},
+            "agent": {"type": "opensearch_client"},
             "event": {"severity": record.levelno},
             "process": {
                 "pid": record.process,
@@ -204,7 +247,7 @@ class ECSLogFormatter(logging.Formatter):
         if labels:
             fields["labels"] = labels
 
-        self._deep_merge(fields, self._static_document)
+        _deep_merge(fields, getattr(record, "ecs_context", {}))
         return self._strip_null_fields(fields)
 
     def _strip_null_fields(self, mapping: dict[str, Any]) -> dict[str, Any]:
@@ -225,23 +268,6 @@ class ECSLogFormatter(logging.Formatter):
             cleaned[key] = value
         return cleaned
 
-    def _deep_merge(self, target: dict[str, Any], source: dict[str, Any]) -> None:
-        """Merge two dicts, descending into nested dicts.
-
-        If both hold a dict under the same key, their contents are merged. If both hold
-        a non-dict value under the same key, the source will override the target.
-
-        Args:
-            target (dict[str, Any]): the dict to update.
-            source (dict[str, Any]): the values to merge in.
-        """
-        for key, value in source.items():
-            existing = target.get(key)
-            if isinstance(value, dict) and isinstance(existing, dict):
-                self._deep_merge(existing, value)
-            else:
-                target[key] = value
-
 
 class OpensearchLogHandler(logging.Handler):
     """A :class:`logging.Handler` that queues records and ships them to OpenSearch.
@@ -259,6 +285,7 @@ class OpensearchLogHandler(logging.Handler):
         flush_threshold: int = 1000,
         flush_interval: float = 5.0,
         buffer_limit: int = 10000,
+        context_filter: ECSLogContextFilter | None = None,
     ) -> None:
         """Create the handler and start its background flush thread.
 
@@ -273,6 +300,9 @@ class OpensearchLogHandler(logging.Handler):
             buffer_limit (int): the most records held in the buffer; beyond this
                 the oldest are dropped and counted in ``dropped``. Keep it at
                 or above ``flush_threshold``.
+            context_filter (ECSLogContextFilter | None): adds the service name and
+                extra fields to each record. Defaults to a filter with no extra
+                fields, and a service name taken from the running program.
         """
         super().__init__(level)
 
@@ -302,6 +332,7 @@ class OpensearchLogHandler(logging.Handler):
         )
         # Filter out records emitted by the flushing thread
         self.addFilter(lambda record: current_thread() is not self._flush_thread)
+        self.addFilter(context_filter or ECSLogContextFilter())
         self._flush_thread.start()
 
     @property
