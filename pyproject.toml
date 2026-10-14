@@ -136,11 +136,11 @@ package = "skip"
 allowlist_externals = ["bash"]
 deps = ["vale==3.22.0.0"]
 # Vale reads the downloaded upstream config (.vale/vale/.vale.ini) as its global
-# configuration, with the tracked .vale.ini layered on top.
+# configuration, with the overrides that the script writes layered on top.
 set_env = { XDG_CONFIG_HOME = "{tox_root}/.vale" }
 commands = [
     ["bash", "tests/lint/get-vale-config.sh"],
-    ["vale", "--config=.vale.ini", "--glob=*.md", "README.md", "docs", "tests"],
+    ["vale", "--config=.vale/overrides.ini", "--glob=*.md", "README.md", "docs", "tests"],
 ]
 
 [tool.tox.env_base.unit]
