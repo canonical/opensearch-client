@@ -51,11 +51,11 @@ class Transport(Protocol):
         """Send a request and return the decoded response body, or a failure.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
         """
         ...
 
@@ -100,10 +100,10 @@ class _HttpTransport:
         """Create the transport.
 
         Args:
-            base_url: the endpoint URL.
-            auth: the username and password.
-            verify: True to verify the server certificate, False to skip it, or
-                the path to a CA bundle.
+            base_url (str): the endpoint URL.
+            auth (tuple[str, str]): the username and password.
+            verify (bool | str): True to verify the server certificate, False to skip
+                it, or the path to a CA bundle.
         """
         self.base_url = base_url.rstrip("/")
         self.verify = verify
@@ -121,11 +121,11 @@ class _HttpTransport:
         """Perform the HTTP call; implemented by each subclass.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Raises:
             NotImplementedError: always, until a subclass implements it.
@@ -143,11 +143,11 @@ class _HttpTransport:
         """Send a request and return the outcome as a result.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Returns:
             The decoded response body, or a failure.
@@ -173,11 +173,11 @@ class DirectTransport(_HttpTransport):
         """Perform the HTTP call; a transport error raises RequestException.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Returns:
             The HTTP response.
@@ -205,10 +205,10 @@ class ProxyTransport(_HttpTransport):
         """Create the transport.
 
         Args:
-            base_url: the endpoint URL.
-            auth: the username and password.
-            verify: True to verify the server certificate, False to skip it, or
-                the path to a CA bundle.
+            base_url (str): the endpoint URL.
+            auth (tuple[str, str]): the username and password.
+            verify (bool | str): True to verify the server certificate, False to skip
+                it, or the path to a CA bundle.
         """
         super().__init__(base_url, auth, verify)
         self.session.headers.update({"osd-xsrf": "true"})
@@ -224,11 +224,11 @@ class ProxyTransport(_HttpTransport):
         """Perform the HTTP call; a transport error raises RequestException.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Returns:
             The HTTP response.
@@ -257,8 +257,9 @@ class FailoverTransport:
         """Create the transport.
 
         Args:
-            primary: the transport tried first.
-            fallback: the transport tried when the primary is unreachable.
+            primary (_HttpTransport): the transport tried first.
+            fallback (_HttpTransport): the transport tried when the primary is
+                unreachable.
         """
         self.primary = primary
         self.fallback = fallback
@@ -274,11 +275,11 @@ class FailoverTransport:
         """Send a request and return the outcome as a result.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Returns:
             The decoded response body, or a failure.
@@ -319,8 +320,9 @@ class ProbeTransport:
         """Create the transport.
 
         Args:
-            direct: the transport for a direct cluster endpoint.
-            proxy: the transport for a dashboard proxy at the same endpoint.
+            direct (_HttpTransport): the transport for a direct cluster endpoint.
+            proxy (_HttpTransport): the transport for a dashboard proxy at the same
+                endpoint.
         """
         self.direct = direct
         self.proxy = proxy
@@ -337,11 +339,11 @@ class ProbeTransport:
         """Send a request and return the outcome as a result.
 
         Args:
-            method: the HTTP method.
-            path: the OpenSearch path, without a leading slash.
-            body: the encoded request body, if any.
-            content_type: the Content-Type header to send with a body.
-            timeout: the request timeout in seconds.
+            method (str): the HTTP method.
+            path (str): the OpenSearch path, without a leading slash.
+            body (bytes | None): the encoded request body, if any.
+            content_type (str): the Content-Type header to send with a body.
+            timeout (int): the request timeout in seconds.
 
         Returns:
             The decoded response body, or a failure.

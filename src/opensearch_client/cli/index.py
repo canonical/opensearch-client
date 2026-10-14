@@ -28,7 +28,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     """Register ``index`` and its operation verbs.
 
     Args:
-        subparsers: the top-level subparsers action to register under.
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
     """
     parser = subparsers.add_parser(NAME, help="index-level operations")
     operations = parser.add_subparsers(dest="operation", required=True)
@@ -282,8 +283,8 @@ def run(  # noqa: PLR0912  # dispatcher: one branch per operation
     """Run the chosen operation against the client.
 
     Args:
-        args: the parsed command-line arguments.
-        client: the client to run the operation with.
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the operation with.
     """
     if args.operation == "mapping":
         if args.field:

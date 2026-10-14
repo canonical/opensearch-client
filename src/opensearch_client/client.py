@@ -25,8 +25,8 @@ class BulkItem(NamedTuple):
     cannot be recovered from the encoded bytes.
 
     Attributes:
-        payload: the encoded action and source lines.
-        document: the original document.
+        payload (bytes): the encoded action and source lines.
+        document (dict[str, Any]): the original document.
     """
 
     payload: bytes
@@ -37,9 +37,9 @@ class BulkItem(NamedTuple):
         """Encode one document's action + source NDJSON lines, once.
 
         Args:
-            action: the bulk action, e.g. ``index``.
-            index: the index the document is written to.
-            document: the document source.
+            action (str): the bulk action, e.g. ``index``.
+            index (str): the index the document is written to.
+            document (dict[str, Any]): the document source.
 
         Returns:
             The item, with the document encoded.
@@ -165,7 +165,7 @@ class OpensearchClient:
         """GET an arbitrary OpenSearch path, e.g. ``_cat/plugins?format=json``.
 
         Args:
-            path: the OpenSearch path, without a leading slash.
+            path (str): the OpenSearch path, without a leading slash.
 
         Returns:
             The decoded response body, or a failure.
@@ -180,8 +180,9 @@ class OpensearchClient:
         """Run a search and return the full response (hits, aggregations, ...).
 
         Args:
-            query: the search body.
-            index: the index or pattern to search; defaults to ``default_index``.
+            query (dict[str, Any]): the search body.
+            index (str | None): the index or pattern to search; defaults to
+                ``default_index``.
 
         Returns:
             The full search response, or a failure.
@@ -194,8 +195,9 @@ class OpensearchClient:
         """Run a search against the index, returning each hit's ``_source``.
 
         Args:
-            query: the search body.
-            index: the index or pattern to search; defaults to ``default_index``.
+            query (dict[str, Any]): the search body.
+            index (str | None): the index or pattern to search; defaults to
+                ``default_index``.
 
         Returns:
             The ``_source`` of each hit, or a failure.
@@ -212,8 +214,9 @@ class OpensearchClient:
         """Count documents matching a DSL query via the ``_count`` API.
 
         Args:
-            query: the query DSL.
-            index: the index or pattern to count in; defaults to ``default_index``.
+            query (dict[str, Any]): the query DSL.
+            index (str | None): the index or pattern to count in; defaults to
+                ``default_index``.
 
         Returns:
             The number of matching documents, or a failure.
@@ -233,8 +236,8 @@ class OpensearchClient:
         ``filter_dsl`` is an optional query DSL the SQL engine ANDs with the query.
 
         Args:
-            sql_query: the SQL query.
-            filter_dsl: a query DSL to AND with the query.
+            sql_query (str): the SQL query.
+            filter_dsl (dict[str, Any] | None): a query DSL to AND with the query.
 
         Returns:
             The raw jdbc response, or a failure.
@@ -250,8 +253,8 @@ class OpensearchClient:
         """Run a SQL query against the index, returning the rows as dicts.
 
         Args:
-            sql_query: the SQL query.
-            filter_dsl: a query DSL to AND with the query.
+            sql_query (str): the SQL query.
+            filter_dsl (dict[str, Any] | None): a query DSL to AND with the query.
 
         Returns:
             One dict per row, or a failure.
@@ -265,7 +268,7 @@ class OpensearchClient:
         """Run a PPL query against the index, returning the rows as dicts.
 
         Args:
-            ppl_query: the PPL query.
+            ppl_query (str): the PPL query.
 
         Returns:
             One dict per row, or a failure.
@@ -281,8 +284,8 @@ class OpensearchClient:
         """Return the SQL execution plan (the pushed-down query DSL), unexecuted.
 
         Args:
-            query: the SQL or PPL query to explain.
-            query_type: the query language: ``sql`` or ``ppl``.
+            query (str): the SQL or PPL query to explain.
+            query_type (str): the query language: ``sql`` or ``ppl``.
 
         Returns:
             The execution plan, or a failure.
@@ -295,7 +298,8 @@ class OpensearchClient:
         """Return the full mapping for the index (or pattern).
 
         Args:
-            index: the index or pattern to inspect; defaults to ``default_index``.
+            index (str | None): the index or pattern to inspect; defaults to
+                ``default_index``.
 
         Returns:
             The mapping, or a failure.
@@ -312,8 +316,9 @@ class OpensearchClient:
         document's ``_source``.
 
         Args:
-            field: the field name, or comma-separated names; wildcards allowed.
-            index: the index or pattern to inspect; defaults to ``default_index``.
+            field (str): the field name, or comma-separated names; wildcards allowed.
+            index (str | None): the index or pattern to inspect; defaults to
+                ``default_index``.
 
         Returns:
             The field mappings, or a failure.
@@ -400,11 +405,11 @@ class OpensearchClient:
         ``max_retries`` times (``max_retries=0`` disables retries).
 
         Args:
-            documents: the documents to index.
-            index: the index to write to; defaults to ``default_index``.
-            action: the bulk action, e.g. ``index`` or ``create``.
-            max_bytes: the largest request body, in bytes.
-            max_retries: how many times to resend transiently failed documents.
+            documents (Iterable[dict[str, Any]]): the documents to index.
+            index (str | None): the index to write to; defaults to ``default_index``.
+            action (str): the bulk action, e.g. ``index`` or ``create``.
+            max_bytes (int): the largest request body, in bytes.
+            max_retries (int): how many times to resend transiently failed documents.
 
         Returns:
             A summary: ``indexed`` and ``failed`` document counts, the number of
@@ -455,10 +460,10 @@ class OpensearchClient:
         ``refresh=True`` makes the document immediately searchable.
 
         Args:
-            document: the document source.
-            index: the index to write to; defaults to ``default_index``.
-            doc_id: the document id, or None to let OpenSearch assign one.
-            refresh: whether to make the document immediately searchable.
+            document (dict[str, Any]): the document source.
+            index (str | None): the index to write to; defaults to ``default_index``.
+            doc_id (str | None): the document id, or None to let OpenSearch assign one.
+            refresh (bool): whether to make the document immediately searchable.
 
         Returns:
             The index response, or a failure.
@@ -478,8 +483,8 @@ class OpensearchClient:
         """Create an index with the given settings/mappings body (``PUT <index>``).
 
         Args:
-            body: the settings and mappings.
-            index: the index to create; defaults to ``default_index``.
+            body (dict[str, Any]): the settings and mappings.
+            index (str | None): the index to create; defaults to ``default_index``.
 
         Returns:
             The create acknowledgement, or a failure.
@@ -495,9 +500,10 @@ class OpensearchClient:
         conflicting change comes back as a failure.
 
         Args:
-            mapping: the mappings body, e.g.
+            mapping (dict[str, Any]): the mappings body, e.g.
                 ``{"properties": {"source.ip": {"type": "ip"}}}``.
-            index: the index (or pattern) to update; defaults to the configured index.
+            index (str | None): the index (or pattern) to update; defaults to the
+                configured index.
 
         Returns:
             The put-mapping acknowledgement.
@@ -508,7 +514,7 @@ class OpensearchClient:
         """Get ingest pipelines: all of them, or one by name.
 
         Args:
-            name: the pipeline to fetch; None fetches every pipeline
+            name (str | None): the pipeline to fetch; None fetches every pipeline
                 (``GET _ingest/pipeline`` vs ``GET _ingest/pipeline/<name>``).
 
         Returns:
@@ -523,8 +529,8 @@ class OpensearchClient:
         """Create or replace a named ingest pipeline (``PUT _ingest/pipeline/<name>``).
 
         Args:
-            name: the pipeline name.
-            body: the pipeline definition, e.g.
+            name (str): the pipeline name.
+            body (dict[str, Any]): the pipeline definition, e.g.
                 ``{"description": "...", "processors": [...]}``.
 
         Returns:
@@ -592,8 +598,8 @@ class OpensearchClient:
         """Refresh an index so its recent writes become searchable.
 
         Args:
-            index: the index or pattern to refresh; defaults to the client's
-                configured index.
+            index (str | None): the index or pattern to refresh; defaults to the
+                client's configured index.
 
         Returns:
             The ``_refresh`` response (per-shard success counts).
@@ -607,7 +613,7 @@ class OpensearchClient:
         client's configured index by accident.
 
         Args:
-            index: the index to delete.
+            index (str): the index to delete.
 
         Returns:
             The delete acknowledgement.
@@ -618,7 +624,7 @@ class OpensearchClient:
         """Report whether an index exists.
 
         Args:
-            index: the index to test.
+            index (str): the index to test.
 
         Returns:
             True if the index exists, False if it does not (a 404). A non-404
@@ -635,7 +641,7 @@ class OpensearchClient:
         """List the names of indices matching a pattern, sorted.
 
         Args:
-            pattern: an index-name pattern (wildcards allowed); defaults to all.
+            pattern (str): an index-name pattern (wildcards allowed); defaults to all.
 
         Returns:
             The matching index names, sorted.
@@ -685,12 +691,13 @@ class OpensearchClient:
         pipeline, ...) build the request with :meth:`request` directly.
 
         Args:
-            source: the index to copy from.
-            dest: the index to copy into.
-            script: a script that transforms each document as it is copied.
-            wait_for_completion: whether to wait, rather than return a task id.
-            refresh: whether to refresh the destination afterwards.
-            timeout: request timeout in seconds.
+            source (str): the index to copy from.
+            dest (str): the index to copy into.
+            script (dict[str, Any] | None): a script that transforms each document as it
+                is copied.
+            wait_for_completion (bool): whether to wait, rather than return a task id.
+            refresh (bool): whether to refresh the destination afterwards.
+            timeout (int): request timeout in seconds.
 
         Returns:
             The reindex response (or task id), or a failure.
@@ -722,13 +729,14 @@ class OpensearchClient:
         instead of aborting.
 
         Args:
-            query: the query DSL selecting the documents.
-            index: the index to update; defaults to ``default_index``.
-            script: a script that transforms each matched document.
-            conflicts: ``proceed`` to continue past version conflicts.
-            wait_for_completion: whether to wait, rather than return a task id.
-            refresh: whether to refresh the index afterwards.
-            timeout: request timeout in seconds.
+            query (dict[str, Any]): the query DSL selecting the documents.
+            index (str | None): the index to update; defaults to ``default_index``.
+            script (dict[str, Any] | None): a script that transforms each matched
+                document.
+            conflicts (str | None): ``proceed`` to continue past version conflicts.
+            wait_for_completion (bool): whether to wait, rather than return a task id.
+            refresh (bool): whether to refresh the index afterwards.
+            timeout (int): request timeout in seconds.
 
         Returns:
             The update response (or task id), or a failure.
@@ -748,7 +756,7 @@ class OpensearchClient:
         """Return a task document by id (``GET _tasks/<task_id>``).
 
         Args:
-            task_id: the task to fetch.
+            task_id (str): the task to fetch.
 
         Returns:
             The task document, or a failure.

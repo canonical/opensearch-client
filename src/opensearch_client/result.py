@@ -28,10 +28,10 @@ class Success(Generic[T]):
     instead.
 
     Attributes:
-        data: the result payload.
-        ok: always True.
-        reason: always empty.
-        status: the HTTP status code, if the call recorded one.
+        data (T): the result payload.
+        ok (Literal[True]): always True.
+        reason (str): always empty.
+        status (int | None): the HTTP status code, if the call recorded one.
     """
 
     data: T
@@ -60,10 +60,10 @@ class Failure:
     as a transport error or bad JSON.
 
     Attributes:
-        reason: why the call failed.
-        ok: always False.
-        data: the failed operation's payload, if it has one.
-        status: the HTTP status code, or None for a non-HTTP failure.
+        reason (str): why the call failed.
+        ok (Literal[False]): always False.
+        data (Any): the failed operation's payload, if it has one.
+        status (int | None): the HTTP status code, or None for a non-HTTP failure.
     """
 
     reason: str

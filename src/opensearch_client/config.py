@@ -63,10 +63,10 @@ def _endpoint(
     the default port) is used to build one.
 
     Args:
-        url_var: the name of the variable holding a full URL.
-        host_var: the name of the variable holding a host.
-        port_var: the name of the variable holding the port for the host.
-        default_port: the port to use when ``port_var`` is unset.
+        url_var (str): the name of the variable holding a full URL.
+        host_var (str): the name of the variable holding a host.
+        port_var (str): the name of the variable holding the port for the host.
+        default_port (str): the port to use when ``port_var`` is unset.
 
     Returns:
         The base URL, or None.

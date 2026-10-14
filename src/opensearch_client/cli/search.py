@@ -29,7 +29,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     """Register the ``search`` subcommand.
 
     Args:
-        subparsers: the top-level subparsers action to register under.
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
     """
     parser = subparsers.add_parser(
         NAME, help="find the newest documents matching exact FIELD=VALUE terms"
@@ -70,8 +71,9 @@ def build_term_search(terms: list[tuple[str, list[str]]], size: int) -> dict[str
     an index in the pattern that lacks the field.
 
     Args:
-        terms: each field name with the values it may match.
-        size: how many documents to return.
+        terms (list[tuple[str, list[str]]]): each field name with the values it may
+            match.
+        size (int): how many documents to return.
 
     Returns:
         The ``_search`` body.
@@ -99,9 +101,10 @@ def _unmapped_fields(
     read is treated as mapped, so the caller never warns on a guess.
 
     Args:
-        client: used to look up each field's mapping.
-        fields: the term field names to check.
-        index: index or pattern to check the mapping in (None uses the default).
+        client (OpensearchClient): used to look up each field's mapping.
+        fields (list[str]): the term field names to check.
+        index (str | None): index or pattern to check the mapping in (None uses the
+            default).
 
     Returns:
         The subset of ``fields`` that are confidently unmapped.
@@ -121,8 +124,8 @@ def run(args: Namespace, client: OpensearchClient) -> None:
     """Run the term search against the client.
 
     Args:
-        args: the parsed command-line arguments.
-        client: the client to search with.
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to search with.
     """
     terms: list[tuple[str, list[str]]] = []
     for token in args.terms:

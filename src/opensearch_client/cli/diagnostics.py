@@ -16,7 +16,7 @@ def _diagnosis(result: OpensearchResult[Any]) -> str | None:
     body (auth, a missing SQL/PPL plugin, a timeout, a missing index).
 
     Args:
-        result: the failed result to inspect.
+        result (OpensearchResult[Any]): the failed result to inspect.
 
     Returns:
         A clearer reason string, or None when the failure is unrecognized.
@@ -58,7 +58,7 @@ def diagnose(result: OpensearchResult[Any]) -> OpensearchResult[Any]:
     clearer reason. An unrecognized failure passes through unchanged.
 
     Args:
-        result: the result to diagnose.
+        result (OpensearchResult[Any]): the result to diagnose.
 
     Returns:
         The result, with a recognized failure's reason rewritten.

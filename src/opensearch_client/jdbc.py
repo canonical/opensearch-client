@@ -13,7 +13,8 @@ def rows_from_sql_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
     with its values. An empty or malformed response yields an empty list.
 
     Args:
-        payload: the jdbc response body, with ``schema`` and ``datarows``.
+        payload (dict[str, Any]): the jdbc response body, with ``schema`` and
+            ``datarows``.
 
     Returns:
         One dict per data row, keyed by column name.

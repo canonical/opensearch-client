@@ -27,7 +27,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     """Register the ``triage`` subcommand and its init/eliminate/status verbs.
 
     Args:
-        subparsers: the top-level subparsers action to register under.
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
     """
     parser = subparsers.add_parser(
         NAME, help="layered threat-hunt triage of a copied log index"
@@ -121,8 +122,8 @@ def run(args: Namespace, client: OpensearchClient) -> None:
     """Run the chosen triage verb against the client.
 
     Args:
-        args: the parsed command-line arguments.
-        client: the client to run the verb with.
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the verb with.
     """
     if getattr(args, "where", None) is not None:
         args.where = resolve_source(args.where)

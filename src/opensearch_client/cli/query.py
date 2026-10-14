@@ -44,7 +44,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     """Register ``query`` and its sql/ppl/dsl language verbs.
 
     Args:
-        subparsers: the top-level subparsers action to register under.
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
     """
     parser = subparsers.add_parser(NAME, help="run a query (SQL, PPL, or raw DSL)")
     languages = parser.add_subparsers(dest="language", required=True)
@@ -149,7 +150,7 @@ def _ppl_with_time(ppl: str, args: Namespace) -> str:
 
 
 def _run_sql(client: OpensearchClient, args: Namespace) -> None:
-    """Run ``query sql``."""
+    """Run the 'query sql' CLI command."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -160,7 +161,7 @@ def _run_sql(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
-    """Run ``query ppl``."""
+    """Run the 'query ppl' CLI command."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -172,7 +173,7 @@ def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_dsl(client: OpensearchClient, args: Namespace) -> None:
-    """Run ``query dsl``."""
+    """Run the 'query dsl' CLI command."""
     parsed = _parse_dsl(resolve_source(args.query))
     time_filter = time_range_filter(args)
     if args.count_only:
@@ -188,8 +189,8 @@ def run(args: Namespace, client: OpensearchClient) -> None:
     """Run the chosen language verb against the client.
 
     Args:
-        args: the parsed command-line arguments.
-        client: the client to run the verb with.
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the verb with.
     """
     if args.language == "sql":
         _run_sql(client, args)

@@ -31,7 +31,7 @@ def add_format_argument(parser: ArgumentParser) -> None:
     """Add the shared ``--format`` option (yaml/json/csv/tsv, default yaml).
 
     Args:
-        parser: the parser to add the option to.
+        parser (ArgumentParser): the parser to add the option to.
     """
     parser.add_argument(
         "--format",
@@ -56,7 +56,7 @@ def resolve_source(value: str) -> str:
     the user.
 
     Args:
-        value: the CLI argument: literal text, ``-``, or ``@PATH``.
+        value (str): the CLI argument: literal text, ``-``, or ``@PATH``.
 
     Returns:
         The resolved text.
@@ -78,8 +78,8 @@ def parse_json_object(text: str, label: str) -> dict[str, Any] | None:
     """Parse text into a JSON object, logging an instructive error on failure.
 
     Args:
-        text: the JSON text to parse (typically from :func:`resolve_source`).
-        label: a short noun naming the input for the error message (e.g.
+        text (str): the JSON text to parse (typically from :func:`resolve_source`).
+        label (str): a short noun naming the input for the error message (e.g.
             ``"mappings body"``).
 
     Returns:
@@ -101,7 +101,7 @@ def add_time_range_arguments(parser: ArgumentParser) -> None:
     """Add the shared ``--since``, ``--until`` and ``--time-field`` options.
 
     Args:
-        parser: the parser to add the options to.
+        parser (ArgumentParser): the parser to add the options to.
     """
     parser.add_argument(
         "--since",
@@ -131,7 +131,7 @@ def resolve_time(value: str) -> str:
     is returned unchanged for OpenSearch to parse.
 
     Args:
-        value: the ``--since`` or ``--until`` argument.
+        value (str): the ``--since`` or ``--until`` argument.
 
     Returns:
         The absolute time string to use in a filter.
@@ -152,7 +152,8 @@ def time_range_filter(args: Namespace) -> dict[str, Any] | None:
     not double-count the boundary.
 
     Args:
-        args: the parsed arguments, with ``since``, ``until`` and ``time_field``.
+        args (Namespace): the parsed arguments, with ``since``, ``until`` and
+            ``time_field``.
 
     Returns:
         The ``range`` query DSL, or None if neither bound is set.
@@ -171,8 +172,8 @@ def _flatten(record: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     """Flatten nested objects into dotted keys; leave list/scalar values intact.
 
     Args:
-        record: the record to flatten.
-        prefix: the dotted key prefix of the enclosing objects.
+        record (dict[str, Any]): the record to flatten.
+        prefix (str): the dotted key prefix of the enclosing objects.
 
     Returns:
         The record with nested objects replaced by dotted keys.
@@ -191,7 +192,7 @@ def _cell(value: Any) -> str:
     """Render a single flattened value for a csv/tsv cell.
 
     Args:
-        value: the value to render.
+        value (Any): the value to render.
 
     Returns:
         The cell text: empty for None, JSON for a list or dict.
@@ -207,8 +208,8 @@ def _delimited(data: Any, delimiter: str) -> str:
     """Render data as delimited text: one row per record, dotted union columns.
 
     Args:
-        data: a record or a list of records.
-        delimiter: the column separator.
+        data (Any): a record or a list of records.
+        delimiter (str): the column separator.
 
     Returns:
         The delimited text, without a trailing newline.
@@ -235,8 +236,8 @@ def render(data: Any, fmt: str) -> str:
     """Render data in the chosen format, without a trailing newline.
 
     Args:
-        data: the data to render.
-        fmt: one of ``FORMATS``.
+        data (Any): the data to render.
+        fmt (str): one of ``FORMATS``.
 
     Returns:
         The rendered text.
@@ -259,9 +260,9 @@ def emit(result: OpensearchResult[Any], label: str, fmt: str) -> None:
     """Print a result's data in the chosen format, or log its reason and exit 1.
 
     Args:
-        result: the result to print.
-        label: a short name for the operation, used in the failure message.
-        fmt: the output format.
+        result (OpensearchResult[Any]): the result to print.
+        label (str): a short name for the operation, used in the failure message.
+        fmt (str): the output format.
     """
     if not result.ok:
         logging.error("%s failed: %s", label, result.reason)

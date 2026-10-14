@@ -25,7 +25,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     """Register ``cluster`` and its inspection verbs.
 
     Args:
-        subparsers: the top-level subparsers action to register under.
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
     """
     parser = subparsers.add_parser(
         NAME, help="cluster-level inspection and resource management"
@@ -191,7 +192,7 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     recorded and the other is still returned.
 
     Args:
-        client: the client to query.
+        client (OpensearchClient): the client to query.
 
     Returns:
         The OpenSearch versions and the plugin versions, or an ``error`` entry
@@ -213,8 +214,8 @@ def run(  # noqa: PLR0912  # dispatcher: one branch per operation
     """Run the chosen operation against the client.
 
     Args:
-        args: the parsed command-line arguments.
-        client: the client to run the operation with.
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the operation with.
     """
     if args.operation == "versions":
         print(render(get_versions(client), args.format))
