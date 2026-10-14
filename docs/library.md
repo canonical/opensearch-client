@@ -48,7 +48,8 @@ method returns an `OpensearchResult`.
   `explain(q)`, `get_mapping()`, `field_mapping(field)`, `opensearch_version()`,
   `plugin_versions()`, `get_pipeline(name=None)`, `get_index_template(name=None)`,
   `get_legacy_template(name=None)`, `simulate_template(name, body)`,
-  `simulate_index(index, timeout=120)`, `get_component_template(name=None)`.
+  `simulate_index(index, timeout=120)`, `get_component_template(name=None)`,
+  `get_alias(name)`.
 - Writes / admin: `index_document(document)`, `bulk(documents)`,
   `create_index(body)`, `put_mapping(mapping)`, `put_pipeline(name, body)`,
   `put_index_template(name, body)`, `delete_index_template(name)`,
@@ -75,6 +76,11 @@ explicit `index=`:
 client.search(query)                  # uses default_index
 client.search(query, index="logs-*")  # overrides it for this call
 ```
+
+`get_alias(name)` returns the `_alias` response: each index holding the alias,
+with its aliases and their properties, e.g.
+`{"logs-000002": {"aliases": {"logs-write": {"is_write_index": True}}}}`. An alias
+no index holds is a `Failure` with `status` 404, as for a missing template.
 
 Helpers whose target index is carried elsewhere take no `index` argument:
 `sql`/`ppl`/`explain` embed it in the query text, and `reindex` names source and

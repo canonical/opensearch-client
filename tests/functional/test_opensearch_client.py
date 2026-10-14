@@ -335,10 +335,11 @@ def test_component_templates_compose_into_an_index_template() -> None:
         assert _client.get_component_template(component).status == 404
 
 
-def test_rollover_dry_run_creates_nothing_and_settings_apply_to_the_new_index() -> None:
+def test_rollover_dry_run_then_apply_moves_the_write_index_with_new_settings() -> None:
     prefix = _unique("opensearch_client-func-rollover")
     alias = f"{prefix}-write"
     first, second = f"{prefix}-000001", f"{prefix}-000002"
+    assert _client.get_alias(alias).status == 404
     with _temporary_indices(first, second):
         assert _client.create_index(
             {
@@ -361,9 +362,12 @@ def test_rollover_dry_run_creates_nothing_and_settings_apply_to_the_new_index() 
         new_settings = _client.get(f"{second}/_settings")
         assert new_settings
         assert new_settings.data[second]["settings"]["index"]["number_of_shards"] == "1"
-        aliases = _client.get(f"_alias/{alias}")
-        assert aliases
-        assert aliases.data[second]["aliases"][alias]["is_write_index"] is True
+        holders = _client.get_alias(alias)
+        assert holders
+        # The old index keeps the alias but stops being where new writes go.
+        assert sorted(holders.data) == [first, second]
+        assert holders.data[first]["aliases"][alias]["is_write_index"] is False
+        assert holders.data[second]["aliases"][alias]["is_write_index"] is True
 
 
 def test_service_accounts_are_created_fetched_used_and_deleted() -> None:
