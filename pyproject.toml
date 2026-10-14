@@ -17,7 +17,6 @@ requires-python = ">=3.10"
 dependencies = [
     "requests",
     "PyYAML",
-    "urllib3",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ sets an explicit, isolated environment and restores it afterward.
 
 import contextlib
 import os
+import warnings
 from typing import Iterator
 
 from opensearch_client.client import OpensearchClient
@@ -87,6 +88,23 @@ def test_host_endpoints_use_default_ports() -> None:
     proxy = _built(OPENSEARCH_DASHBOARD_HOST="dash", OPENSEARCH_INDEX="x")._transport
     assert isinstance(proxy, ProxyTransport)
     assert proxy.base_url == "https://dash:5601"
+
+
+def test_insecure_silences_the_unverified_request_warning() -> None:
+    """Skipping verification is deliberate, so the warning about it is noise."""
+    message = "Unverified HTTPS request is being made to host 'h'."
+
+    with warnings.catch_warnings(record=True) as shown:
+        warnings.simplefilter("always")  # report everything unless filtered later
+        with env(**_CREDS, OPENSEARCH_URL="https://h"):
+            client_from_env()
+        warnings.warn(message)
+        assert len(shown) == 1, "a verifying client must not hide the warning"
+
+        with env(**_CREDS, OPENSEARCH_URL="https://h"):
+            client_from_env(insecure=True)
+        warnings.warn(message)
+        assert len(shown) == 1, "an insecure client must silence the warning"
 
 
 def test_verify_reflects_insecure_and_ca_cert() -> None:

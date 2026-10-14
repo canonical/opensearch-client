@@ -34,8 +34,7 @@ Other variables:
 import logging
 import os
 import sys
-
-import urllib3
+import warnings
 
 from opensearch_client.client import DEFAULT_INDEX, OpensearchClient
 from opensearch_client.transport import (
@@ -120,7 +119,9 @@ def client_from_env(insecure: bool = False) -> OpensearchClient | None:
     auth = (user, password)
 
     if insecure or _env_flag("OPENSEARCH_INSECURE"):
-        urllib3.disable_warnings()
+        # requests warns on every call to a host whose certificate is not
+        # verified. The caller asked for that, so the warning is only noise.
+        warnings.filterwarnings("ignore", message="Unverified HTTPS request")
         verify: bool | str = False
     else:
         verify = os.environ.get("OPENSEARCH_CA_CERT") or True
