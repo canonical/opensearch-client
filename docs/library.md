@@ -49,11 +49,14 @@ method returns an `OpensearchResult`.
   `plugin_versions()`, `get_pipeline(name=None)`, `get_index_template(name=None)`,
   `get_legacy_template(name=None)`, `simulate_template(name, body)`,
   `simulate_index(index, timeout=120)`, `get_component_template(name=None)`,
-  `get_alias(name)`.
+  `get_alias(name)`, `get_ism_policy(policy_id=None)`, `explain_ism(index)`.
 - Writes / admin: `index_document(document)`, `bulk(documents)`,
   `create_index(body)`, `put_mapping(mapping)`, `put_pipeline(name, body)`,
   `put_index_template(name, body)`, `delete_index_template(name)`,
   `put_component_template(name, body)`, `delete_component_template(name)`,
+  `put_index_settings(index, settings)`,
+  `put_ism_policy(policy_id, body, seq_no=None, primary_term=None)`,
+  `add_ism_policy(index, policy_id)`, `change_ism_policy(index, policy_id)`,
   `rollover(alias, settings=None, dry_run=False, timeout=120)`,
   `reindex(source, dest)`, `update_by_query(query)`, `get_task(task_id)`.
 
@@ -115,6 +118,32 @@ client.simulate_template("logs", candidate)  # what a matching index would get
 client.put_index_template("logs", candidate)
 client.simulate_index("logs-2026.41")        # what this index gets, all templates applied
 ```
+
+## ISM policies
+
+An Index State Management (ISM) policy is a state machine OpenSearch runs on
+each index it manages: each state's actions (such as `rollover` or `delete`)
+run in order, then its transitions move the index on when their conditions are
+met. A policy's `ism_template` attaches it to matching indices created after the
+policy; an index that existed before needs `add_ism_policy`.
+
+Updating a policy, then moving the indices it manages to the new version:
+
+```python
+read = client.get_ism_policy("logs-retention")
+if read:
+    client.put_ism_policy(
+        "logs-retention",
+        new_policy,
+        seq_no=read.data["_seq_no"],
+        primary_term=read.data["_primary_term"],
+    )
+    client.change_ism_policy("logs-*", "logs-retention")
+```
+
+A rollover action reads the alias to roll over from the index setting
+`index.plugins.index_state_management.rollover_alias`; set it on existing
+indices with `put_index_settings`, and on new ones in their index template.
 
 ## Transports
 
