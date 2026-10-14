@@ -39,7 +39,7 @@ Runtime dependencies: `requests`, `PyYAML`.
 
 The client currently covers single-document and bulk indexing, search, SQL and
 PPL, counts, mappings, versions, index creation and lifecycle (refresh, delete,
-exists, list, rollover), aliases, index templates, reindex, update-by-query, and task polling, over
+exists, list, rollover), aliases, index templates, ISM policies, reindex, update-by-query, and task polling, over
 a direct or dashboard-proxy transport with server-certificate verification. The
 following capabilities are planned but not yet implemented:
 
@@ -53,7 +53,3 @@ that require clients to present a certificate.
 
 An optional pipeline name on the indexing operations (single and bulk), so
 documents are routed through a named ingest pipeline as they are written.
-
-### ISM management
-
-Get and set index state management (ISM) policies.

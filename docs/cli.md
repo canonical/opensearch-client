@@ -250,6 +250,15 @@ os-cli cluster set component-template web-fields @web-fields.json
 os-cli cluster delete component-template web-fields   # dry run: lists its users
 ```
 
+`ism-policy` shows ISM policies (all, or one by ID), and `set ism-policy`
+creates one from `SOURCE`, or replaces it if it exists. See
+[ISM policies](library.md#ism-policies) for how policies apply to indices.
+
+```
+os-cli cluster ism-policy
+os-cli cluster set ism-policy logs-retention @policy.json
+```
+
 ## `os-cli triage`
 
 ### What triage does

@@ -87,6 +87,23 @@ def _tally_bulk_items(
             failures.append((item, {"status": outcome.get("status"), "error": error}))
 
 
+def _report_failed_indices(
+    result: OpensearchResult[dict[str, Any]],
+) -> OpensearchResult[dict[str, Any]]:
+    """Turn an ISM response that reports failed indices into a Failure.
+
+    The ISM add and change_policy APIs answer 200 even when some indices were
+    not changed, flagging them with ``"failures": true`` and listing each in
+    ``failed_indices`` with its reason.
+    """
+    if not result or not result.data.get("failures"):
+        return result
+    reasons = []
+    for failed in result.data.get("failed_indices", []):
+        reasons.append(f"{failed['index_name']}: {failed['reason']}")
+    return Failure("; ".join(reasons), data=result.data, status=result.status)
+
+
 def _query_string(params: dict[str, Any]) -> str:
     """Render params as a URL query string (bools lowercased)."""
     parts = []
@@ -466,6 +483,95 @@ class OpensearchClient:
     def delete_component_template(self, name: str) -> OpensearchResult[dict[str, Any]]:
         """Delete a component template."""
         return self.request("DELETE", f"_component_template/{name}")
+
+    def get_ism_policy(
+        self, policy_id: str | None = None
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Get all ISM policies, or one by ID.
+
+        One policy comes with the ``_seq_no`` and ``_primary_term`` that
+        :meth:`put_ism_policy` needs to update it.
+        """
+        path = "_plugins/_ism/policies"
+        if policy_id is not None:
+            path = f"{path}/{policy_id}"
+        return self.request("GET", path)
+
+    def put_ism_policy(
+        self,
+        policy_id: str,
+        body: dict[str, Any],
+        *,
+        seq_no: int | None = None,
+        primary_term: int | None = None,
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Create an ISM policy, or update one read by :meth:`get_ism_policy`.
+
+        An update must pass the ``_seq_no`` and ``_primary_term`` the policy was
+        read with: OpenSearch refuses an update without them (409), and refuses
+        them if the policy changed since the read.
+
+        Args:
+            policy_id: the policy ID.
+            body: the policy definition, ``{"policy": {...}}``.
+            seq_no: the read policy's ``_seq_no``; None to create.
+            primary_term: the read policy's ``_primary_term``; None to create.
+        """
+        path = f"_plugins/_ism/policies/{policy_id}"
+        if seq_no is not None and primary_term is not None:
+            path += _query_string(
+                {"if_seq_no": seq_no, "if_primary_term": primary_term}
+            )
+        return self.request("PUT", path, body)
+
+    def add_ism_policy(
+        self, index: str, policy_id: str
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Attach an ISM policy to the indices matching ``index`` (wildcards allowed).
+
+        An index that already has a policy is left unchanged. If any index is not
+        changed the result is a Failure whose ``data`` is the response, where
+        ``failed_indices`` gives each one's ``index_name`` and ``reason``.
+        """
+        result = self.request(
+            "POST", f"_plugins/_ism/add/{index}", {"policy_id": policy_id}
+        )
+        return _report_failed_indices(result)
+
+    def change_ism_policy(
+        self, index: str, policy_id: str
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Move the managed indices matching ``index`` to a policy's current version.
+
+        Each index switches once it finishes the actions of its current state.
+        An unmanaged index is not changed. If any index is not changed the result
+        is a Failure whose ``data`` is the response, where ``failed_indices``
+        gives each one's ``index_name`` and ``reason``.
+        """
+        result = self.request(
+            "POST", f"_plugins/_ism/change_policy/{index}", {"policy_id": policy_id}
+        )
+        return _report_failed_indices(result)
+
+    def explain_ism(self, index: str) -> OpensearchResult[dict[str, Any]]:
+        """Get the ISM status of the indices matching ``index`` (wildcards allowed).
+
+        Each index maps to its ``index.plugins.index_state_management.policy_id``
+        (None when unmanaged) and, once ISM has run, its state and action. A
+        pattern matching no index is a Failure with ``status`` 400.
+        """
+        return self.request("GET", f"_plugins/_ism/explain/{index}")
+
+    def put_index_settings(
+        self, index: str, settings: dict[str, Any]
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Update dynamic settings of an existing index (``PUT <index>/_settings``).
+
+        Args:
+            index: the index or pattern to update; required, never defaulted.
+            settings: the settings, e.g. ``{"index.refresh_interval": "30s"}``.
+        """
+        return self.request("PUT", f"{index}/_settings", settings)
 
     def refresh(self, index: str | None = None) -> OpensearchResult[dict[str, Any]]:
         """Refresh an index so its recent writes become searchable.

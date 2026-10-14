@@ -12,6 +12,7 @@ the variables, runs these tests, and tears everything down.
 
 import contextlib
 import os
+import time
 import uuid
 from typing import Iterator
 
@@ -322,3 +323,61 @@ def test_rollover_dry_run_then_apply_moves_the_write_index_with_new_settings() -
         assert sorted(holders.data) == [first, second]
         assert holders.data[first]["aliases"][alias]["is_write_index"] is False
         assert holders.data[second]["aliases"][alias]["is_write_index"] is True
+
+
+def test_ism_policy_is_created_updated_attached_explained_and_changed() -> None:
+    prefix = _unique("opensearch_client-func-ism")
+    policy_id, index = f"{prefix}-policy", f"{prefix}-000001"
+    policy = {
+        "policy": {
+            "description": "first",
+            "default_state": "hot",
+            "states": [{"name": "hot", "actions": [], "transitions": []}],
+        }
+    }
+    with _temporary_indices(index):
+        try:
+            assert _client.get_ism_policy(policy_id).status == 404
+            assert _client.put_ism_policy(policy_id, policy)
+
+            # An update must carry the sequence numbers it was read with.
+            policy["policy"]["description"] = "second"
+            assert _client.put_ism_policy(policy_id, policy).status == 409
+            read = _client.get_ism_policy(policy_id)
+            assert read
+            assert _client.put_ism_policy(
+                policy_id,
+                policy,
+                seq_no=read.data["_seq_no"],
+                primary_term=read.data["_primary_term"],
+            )
+            reread = _client.get_ism_policy(policy_id)
+            assert reread
+            assert reread.data["policy"]["description"] == "second"
+
+            assert _client.create_index({}, index=index)
+            assert _client.explain_ism(f"{prefix}-nomatch-*").status == 400
+            assert _client.put_index_settings(
+                index, {"index.plugins.index_state_management.rollover_alias": prefix}
+            )
+            assert _client.add_ism_policy(index, policy_id)
+            # ISM records the attachment asynchronously; explain shows it shortly.
+            managed_by = None
+            for _ in range(30):
+                explained = _client.explain_ism(index)
+                assert explained
+                key = "index.plugins.index_state_management.policy_id"
+                managed_by = explained.data[index][key]
+                if managed_by == policy_id:
+                    break
+                time.sleep(1)
+            assert managed_by == policy_id
+
+            # A second add is refused per index, inside a 200 response.
+            again = _client.add_ism_policy(index, policy_id)
+            assert not again
+            assert "already has a policy" in again.reason
+            assert _client.change_ism_policy(index, policy_id)
+        finally:
+            _client.request("POST", f"_plugins/_ism/remove/{index}")
+            _client.request("DELETE", f"_plugins/_ism/policies/{policy_id}")

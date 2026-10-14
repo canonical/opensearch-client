@@ -69,6 +69,14 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     )
     add_format_argument(component)
 
+    ism_policy = operations.add_parser(
+        "ism-policy", help="show ISM policies (all, or one by ID)"
+    )
+    ism_policy.add_argument(
+        "policy_id", nargs="?", metavar="ID", help="policy to show (default: all)"
+    )
+    add_format_argument(ism_policy)
+
     set_parser = operations.add_parser(
         "set", help="set a cluster-level resource (e.g. an ingest pipeline)"
     )
@@ -114,6 +122,19 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
         help="the component template definition as JSON ('@PATH', '-', or literal)",
     )
     add_format_argument(set_component)
+    set_ism_policy = set_targets.add_parser(
+        "ism-policy",
+        help="create or replace an ISM policy",
+        epilog='SOURCE is the policy definition as JSON, {"policy": {...}}: '
+        "'@PATH' reads a file, '-' reads stdin, or give the text literally.",
+    )
+    set_ism_policy.add_argument("policy_id", metavar="ID", help="the policy ID")
+    set_ism_policy.add_argument(
+        "source",
+        metavar="SOURCE",
+        help="the policy definition as JSON ('@PATH', '-', or literal)",
+    )
+    add_format_argument(set_ism_policy)
 
     delete_parser = operations.add_parser(
         "delete", help="delete a cluster-level resource; dry-run unless --apply"
@@ -276,6 +297,26 @@ def run(args: Namespace, client: OpensearchClient) -> None:
         ]
         summary = {"component_template": args.name, "dry_run": True, "used_by": used_by}
         print(render(summary, args.format))
+    elif args.operation == "ism-policy":
+        emit(diagnose(client.get_ism_policy(args.policy_id)), "ISM policy", args.format)
+    elif args.operation == "set" and args.set_target == "ism-policy":
+        body = parse_json_object(resolve_source(args.source), "ISM policy definition")
+        if body is None:
+            sys.exit(2)
+        # Replacing a policy needs the sequence numbers it was last written with.
+        read_result = client.get_ism_policy(args.policy_id)
+        if read_result:
+            result = client.put_ism_policy(
+                args.policy_id,
+                body,
+                seq_no=read_result.data["_seq_no"],
+                primary_term=read_result.data["_primary_term"],
+            )
+        elif read_result.status == 404:
+            result = client.put_ism_policy(args.policy_id, body)
+        else:
+            result = read_result
+        emit(diagnose(result), "Set ISM policy", args.format)
     elif args.operation == "simulate" and args.simulate_target == "template":
         body = parse_json_object(resolve_source(args.source), "template definition")
         if body is None:
