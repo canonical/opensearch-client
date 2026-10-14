@@ -43,7 +43,7 @@ env_list = [
     "doc-checks",
     "vale",
     "actionlint",
-    # requires-python is >=3.10; 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
+    # 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
     "unit-py310",
     "unit-py312",
     "unit-py314",
@@ -214,7 +214,8 @@ extend-ignore-names = ["handleError"]
 "tests/**" = ["D"]
 
 [tool.codespell]
-skip = [".venv", "venv", ".git", ".tox", ".pytest_cache", ".ruff_cache", ".vale"]
+# codespell skips hidden directories by default
+skip = ["venv"]
 
 [tool.vulture]
 paths = ["src", "tests"]
