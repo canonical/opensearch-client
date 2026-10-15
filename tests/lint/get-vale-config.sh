@@ -42,7 +42,6 @@ cp -r "${work_dir}/styles/config/vocabularies/Canonical" "${DEST}/styles/config/
 cp -r "${work_dir}/styles/config/dictionaries" "${DEST}/styles/config/dictionaries"
 cp "${work_dir}/vale.ini" "${DEST}/.vale.ini"
 
-
 # customize configuration for vale checks
 cat >.vale/overrides.ini <<'EOF'
 [*.md]
