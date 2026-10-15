@@ -37,8 +37,7 @@ def main() -> None:
         command.add_subparser(subparsers)
 
     args = parser.parse_args()
-    # The security commands talk to the cluster's REST port directly: a probe would
-    # read the 404 of an existence check as "no direct endpoint".
+    # The security commands must reach the cluster's REST port, never a proxy.
     client = client_from_env(
         insecure=args.insecure, direct_only=args.subcommand == security_cmd.NAME
     )

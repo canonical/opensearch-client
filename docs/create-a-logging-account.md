@@ -1,35 +1,10 @@
 # Create a logging account
 
-A service that ships its logs to OpenSearch, such as a collector using
-`OpensearchLogHandler`, should log in with an account that may write to its one
-log index and do nothing else. This guide sets up such an account in an
-environment with `os-cli security`.
-
-## What the account is
-
-The account is three Security plugin objects, all named after the user:
-
-- the role `<user>-writer`;
-- the internal user `<user>`, with a password;
-- the role mapping that gives the user the role.
-
-The role holds these permissions, and no others:
-
-| Permission                | Where              | Why                                                            |
-| ------------------------- | ------------------ | -------------------------------------------------------------- |
-| `indices:data/write/bulk` | cluster            | Bulk requests are checked at the cluster level as well         |
-| `indices:admin/get`       | the one log index  | The handler checks that the index exists before it writes      |
-| `create_index`            | the one log index  | The handler creates the index when it is missing or deleted    |
-| `index`                   | the one log index  | Writing documents, and adding the mapping of new fields        |
-
-The index permissions name the index exactly, with no wildcard. The account
-cannot search or read any index, write to another index, or delete anything.
-The functional test `test_a_log_writer_account_may_create_and_write_its_index_and_nothing_else`
-checks this against a real cluster.
-
-`create_index` and `index` are default action groups; see
-[default action groups](https://docs.opensearch.org/latest/security/access-control/default-action-groups/)
-for the actions each one includes.
+A service that ships its logs to OpenSearch, such as a collector, should log in
+with an account that may only write to its one log index. This guide sets one up
+in an environment with [`os-cli security`](cli.md#os-cli-security). The
+permissions the account gets, and why each is needed, are in
+`src/opensearch_client/security.py`.
 
 ## Before you start
 
@@ -37,15 +12,14 @@ You need:
 
 - an administrator login to the cluster, in `OPENSEARCH_USER` and
   `OPENSEARCH_PASSWORD`;
-- the cluster's REST port in `OPENSEARCH_URL` (or `OPENSEARCH_HOST`), usually
-  9200. The Security API is not reached through a Dashboards proxy;
+- the cluster's REST port, usually 9200, in `OPENSEARCH_URL` or
+  `OPENSEARCH_HOST`;
 - the user name and the index name the service uses.
 
 ## Create the account
 
-1. Write a new password to a file that only you can read. The cluster's password
-   policy applies, so a password it rejects makes the command fail before the
-   user is created.
+1. Write a new password to a file that only you can read. It must meet the
+   cluster's password policy.
 
    ```
    umask 077
@@ -59,11 +33,8 @@ You need:
      --password-file password.txt
    ```
 
-   If any part already exists, the command fails without changing it and says
-   which parts it created before the failure.
-
-1. Check it. Every part should be `true`. The index is `false` until the
-   service first writes to it:
+1. Check it. Every part of the account should be `true`; the index stays `false`
+   until the service first writes to it.
 
    ```
    os-cli security check-account collector-logging --index collector-logging
@@ -75,9 +46,8 @@ You need:
 
 ## Change the password
 
-Creation never overwrites, so changing a password means deleting the account
-and creating it again. In between, the service cannot log in, so logs it sends
-then may be lost.
+Delete the account and create it again with a new password file. In between,
+the service cannot log in, so logs it sends then may be lost.
 
 ```
 os-cli security delete-account collector-logging --apply
@@ -88,9 +58,6 @@ os-cli security create-account collector-logging --index collector-logging \
 ## Remove the account
 
 ```
-os-cli security delete-account collector-logging            # shows what exists
+os-cli security delete-account collector-logging          # shows what exists
 os-cli security delete-account collector-logging --apply
 ```
-
-The mapping goes first, so the user loses access before anything else is
-removed. The index and its documents are kept.

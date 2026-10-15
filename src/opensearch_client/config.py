@@ -89,11 +89,8 @@ def client_from_env(
     Args:
         insecure (bool): if True, skip TLS certificate verification, the same as
             setting ``OPENSEARCH_INSECURE``; either turning it on is enough.
-        direct_only (bool): if True, use only a direct connection to the endpoint in
-            ``OPENSEARCH_URL`` or ``OPENSEARCH_HOST``, never probing or falling back
-            to a dashboard proxy, and ignore the ``OPENSEARCH_DASHBOARD_*``
-            variables. An HTTP error on the first request, such as a 404, is then
-            returned as it is rather than read as "no direct endpoint".
+        direct_only (bool): if True, connect only directly; see "Building from
+            the environment" in docs/library.md.
 
     Returns:
         OpensearchClient | None: the configured client, or None (after printing an

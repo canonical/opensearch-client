@@ -381,8 +381,7 @@ def test_a_log_writer_account_may_create_and_write_its_index_and_nothing_else() 
         _temporary_indices(index, other_index, uncreated_index),
         _temporary_accounts([user], [role]),
     ):
-        # Settle the admin client's transport first: as the very first request, a
-        # 404 is read as "the cluster did not answer".
+        # Settle the probe first, so the lookups' 404s are not read as no endpoint.
         assert _client.get("_cluster/health")
         assert _client.create_index({}, index=other_index)
 

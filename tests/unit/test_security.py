@@ -44,7 +44,6 @@ def test_create_stores_the_role_the_user_and_the_mapping() -> None:
         USER: {"password": "a-secret-value"},
         MAPPING: {"users": ["collector-logging"]},
     }
-    # Access is granted last, so a failure part-way leaves no working account.
     puts = [path for method, path, _ in api.calls if method == "PUT"]
     assert puts == [ROLE, USER, MAPPING]
 

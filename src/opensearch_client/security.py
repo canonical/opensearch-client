@@ -3,19 +3,8 @@
 
 """Create, check and delete an account that may only write logs to one index.
 
-The account is three Security plugin objects, all named after the user:
-
-- the role ``<user>-writer``, which may create the index, check that it exists,
-  and write documents to it, and nothing else;
-- the internal user, with a plain-text password;
-- the role mapping that gives the user the role.
-
-Creation never overwrites: a part that already exists is left as it is, and the
-call fails. Nothing here logs a request body, so the password is never logged.
-
-The requests go to the Security REST API, which the cluster's REST port serves.
-Why the role holds each permission, and how to set up an account in an
-environment, is in ``docs/create-a-logging-account.md``.
+The account is three Security plugin objects named after its user: the role
+``<user>-writer``, the internal user, and the role mapping between them.
 """
 
 from typing import Any
@@ -43,9 +32,6 @@ def _check_user_name(user: str) -> Failure | None:
     A blank name, ``.`` or ``..`` would address the whole collection or another
     endpoint. ``*`` and ``?`` are wildcards in a role mapping, where they would
     give the role to every user they match.
-
-    Returns:
-        A failure naming the problem, or None if the name is fine.
     """
     if not user.strip() or user in (".", "..") or "*" in user or "?" in user:
         return Failure(
@@ -60,9 +46,6 @@ def _check_index_name(index: str) -> Failure | None:
 
     Besides the cases of :func:`_check_user_name`, a name starting with ``_`` is
     an API endpoint (or ``_all``), and ``,`` separates several indexes.
-
-    Returns:
-        A failure naming the problem, or None if the name is fine.
     """
     if (
         not index.strip()
@@ -86,10 +69,6 @@ def _create_if_absent(
 
     The lookup and the PUT are two requests, so another writer could create the
     object in between; the Security API has no conditional PUT.
-
-    Returns:
-        The API's acknowledgement; a failure with status 409 if the object
-        exists; or the lookup's failure if it failed for another reason.
     """
     lookup = client.request("GET", path)
     if lookup:
@@ -110,9 +89,8 @@ def create_log_writer_account(
 
     Args:
         client: the client used to reach the cluster, as an administrator.
-        user: the user name; the role is named ``<user>-writer``.
-        password: the user's plain-text password. The cluster's password policy
-            applies.
+        user: the user name.
+        password: the user's plain-text password.
         index: the exact name of the one index the account writes to.
 
     Returns:
@@ -132,11 +110,19 @@ def create_log_writer_account(
         client,
         _build_path(_ROLES_PATH, role),
         {
+            # Bulk requests are checked at the cluster level as well as on the index.
             "cluster_permissions": ["indices:data/write/bulk"],
             "index_permissions": [
                 {
                     "index_patterns": [index],
-                    "allowed_actions": ["indices:admin/get", "create_index", "index"],
+                    "allowed_actions": [
+                        # Look the index up before writing to it.
+                        "indices:admin/get",
+                        # Create the index when it is missing or was deleted.
+                        "create_index",
+                        # Write documents, and map the fields they add.
+                        "index",
+                    ],
                 }
             ],
         },
@@ -178,7 +164,7 @@ def check_log_writer_account(
 
     Args:
         client: the client used to reach the cluster, as an administrator.
-        user: the user name; the role is ``<user>-writer``.
+        user: the user name.
         index: the exact name of the index the account writes to.
 
     Returns:
@@ -219,7 +205,7 @@ def delete_log_writer_account(
 
     Args:
         client: the client used to reach the cluster, as an administrator.
-        user: the user name; the role is ``<user>-writer``.
+        user: the user name.
         apply: if False, delete nothing and only look each part up.
 
     Returns:

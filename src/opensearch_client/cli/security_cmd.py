@@ -1,14 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""``os-cli security``: manage an account that may only write logs to one index.
-
-A thin CLI over :mod:`opensearch_client.security`::
-
-    security create-account USER --index INDEX --password-file PATH|-
-    security check-account USER --index INDEX
-    security delete-account USER [--apply]
-"""
+"""``os-cli security``: a thin CLI over :mod:`opensearch_client.security`."""
 
 import logging
 import sys
