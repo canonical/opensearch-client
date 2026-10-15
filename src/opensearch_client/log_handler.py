@@ -30,7 +30,13 @@ from datetime import datetime, timezone
 from threading import Condition, Event, Lock, Thread, current_thread
 from typing import Any, Protocol
 
+from opensearch_client.client import (
+    FailureReason,
+    bulk_retry_delays,
+    is_transient_failure,
+)
 from opensearch_client.result import OpensearchResult
+from opensearch_client.transport import REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +44,15 @@ logger = logging.getLogger(__name__)
 # logging.shutdown cannot hang when OpenSearch is unreachable.
 _FLUSH_WAIT_SECONDS = 10.0
 
-# How long close() waits for the flush thread to finish its final send.
-_CLOSE_JOIN_SECONDS = 5.0
-
-# How many more times bulk() immediately resends documents that failed to index.
+# How many more times bulk() resends documents that failed to index.
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
 
-# Errors that are classified as transient, and should be retried: the disk watermark
-# blocking writes, and an index that was deleted and will be created again.
-_TEMPORARY_ERROR_TYPES = ("cluster_block_exception", "index_not_found_exception")
+# How long close() waits for the flush thread to finish its final send: every
+# attempt may run to its request timeout, and bulk waits between them.
+_CLOSE_JOIN_SECONDS = (_SEND_RETRIES + 1) * REQUEST_TIMEOUT + sum(
+    bulk_retry_delays(_SEND_RETRIES)
+)
 
 # The ECS version the documents conform to.
 _ECS_VERSION = "9.0"
@@ -365,8 +370,10 @@ class OpensearchLogHandler(logging.Handler):
         return self._dropped
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Queue one record for the flush thread; never block and never raise.
+        """Queue one record for the flush thread; never block, and do not raise.
 
+        A record that cannot be queued is passed to ``handleError``. Like the
+        standard library's handlers, only ``RecursionError`` is let through.
         Once ``close`` has been called, the record is counted in ``dropped``
         instead of queued.
 
@@ -421,8 +428,8 @@ class OpensearchLogHandler(logging.Handler):
     def close(self) -> None:
         """Stop the flush thread after its final send, then close the handler.
 
-        Waits at most 5 seconds for that final send. Records it cannot send are
-        dropped.
+        Waits for that final send for as long as ``OpensearchClient.bulk`` can take
+        with its retries. Records it cannot send are dropped.
         """
         self._flush_thread_stop.set()
         self._flush_thread_wakeup.set()
@@ -433,8 +440,8 @@ class OpensearchLogHandler(logging.Handler):
         """Send the queue on the flush thread until ``close`` is called.
 
         Sends every ``flush_interval`` seconds, when woken by a full buffer, and
-        when ``flush`` asks. A failed send never ends the loop. After ``close``
-        the loop makes one last send and exits.
+        when ``flush`` asks. A failed send is logged and never ends the loop.
+        After ``close`` the loop makes one last send and exits.
         """
         while True:
             self._flush_thread_wakeup.wait(self.flush_interval)
@@ -467,6 +474,10 @@ class OpensearchLogHandler(logging.Handler):
         reason after ``bulk``'s retries go back to the front of the queue. Records
         the cluster rejects, or that are lost to an exception, are added to
         ``dropped``.
+
+        Raises:
+            Exception: whatever ``bulk`` raises, after its documents are counted
+                as dropped.
         """
         with self._lock:
             if not self._buffer:
@@ -488,17 +499,10 @@ class OpensearchLogHandler(logging.Handler):
         kept = []
         rejected = 0
         for failure in result.data["failures"]:
-            status = failure["status"]
             error_type = (failure.get("error") or {}).get("type")
-            if error_type == "index_not_found_exception":
+            if error_type == FailureReason.INDEX_NOT_FOUND:
                 self._index_ready = False  # create the index before the next send
-            is_temporary = (
-                status is None
-                or status in (408, 429)
-                or status >= 500
-                or error_type in _TEMPORARY_ERROR_TYPES
-            )
-            if is_temporary:
+            if is_transient_failure(failure):
                 kept.append(failure["document"])
             else:
                 rejected += 1

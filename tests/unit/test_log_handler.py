@@ -10,6 +10,7 @@ functional tests. These tests cover what the handler adds on top.
 
 import contextlib
 import logging
+import logging.handlers
 import sys
 import threading
 import time
@@ -389,6 +390,7 @@ def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> Non
     """
     cases = (
         (503, "unavailable_shards_exception", True),
+        (429, "es_rejected_execution_exception", True),
         (403, "cluster_block_exception", True),
         (400, "mapper_parsing_exception", False),
         (403, "security_exception", False),
@@ -408,25 +410,35 @@ def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> Non
             )
 
 
-def test_a_send_that_raises_is_contained() -> None:
-    """Records are counted as dropped; the thread lives on; close does not raise."""
+def test_a_send_that_raises_is_contained_and_reported() -> None:
+    """Records are counted as dropped; the thread lives on; close does not raise.
+
+    Each failed send is reported through logging, with its traceback.
+    """
     client = FakeClient(bulk_error=RuntimeError("boom"))
     handler = _handler(client)
+    reports = logging.handlers.BufferingHandler(capacity=100)
+    handler_logger = logging.getLogger("opensearch_client.log_handler")
+    handler_logger.addHandler(reports)
+    try:
+        with _running(handler):
+            handler.emit(_record("one"))
+            handler.flush()
+            assert handler.dropped == 1
 
-    with _running(handler):
-        handler.emit(_record("one"))
-        handler.flush()
-        assert handler.dropped == 1
+            handler.emit(_record("two"))
+            handler.flush()
+            assert handler.dropped == 2  # the flush thread survived the first failure
 
-        handler.emit(_record("two"))
-        handler.flush()
-        assert handler.dropped == 2  # the flush thread survived the first failure
-
-        handler.emit(_record("three"))
-    # Leaving the block closed the handler. Its final send raised, and that must
-    # not have escaped.
+            handler.emit(_record("three"))
+        # Leaving the block closed the handler. Its final send raised, and that
+        # must not have escaped.
+    finally:
+        handler_logger.removeHandler(reports)
 
     assert handler.dropped == 3
+    assert len(reports.buffer) == 3
+    assert all(report.exc_info for report in reports.buffer)
 
 
 def test_emit_lets_recursion_error_through() -> None:
