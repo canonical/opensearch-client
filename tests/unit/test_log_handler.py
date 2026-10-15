@@ -30,7 +30,6 @@ from opensearch_client.log_handler import (
     _Waitlist,
 )
 from opensearch_client.result import Failure, OpensearchResult, Success
-from opensearch_client.transport import REQUEST_TIMEOUT
 
 # How long the tests wait on another thread before deciding it is stuck. Only
 # reached when the code under test is broken.

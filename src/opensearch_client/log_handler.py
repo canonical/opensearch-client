@@ -48,10 +48,10 @@ _FLUSH_WAIT_SECONDS = 10.0
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
 
-# How long close() waits for the flush thread to finish its final send
+# How long close() waits for the flush thread to finish its final send: every
+# attempt may run to its request timeout, and bulk waits between them.
 _CLOSE_JOIN_SECONDS = (_SEND_RETRIES + 1) * REQUEST_TIMEOUT + sum(
-    min(BULK_RETRY_BASE_DELAY * 2**retry, BULK_RETRY_MAX_DELAY)
-    for retry in range(_SEND_RETRIES)
+    bulk_retry_delays(_SEND_RETRIES)
 )
 
 # The ECS version the documents conform to.
@@ -642,7 +642,6 @@ class OpensearchLogHandler(logging.Handler):
         kept = []
         rejected = 0
         for failure in result.data["failures"]:
-            status = failure["status"]
             error_type = (failure.get("error") or {}).get("type")
             if error_type == "index_not_found_exception":
                 self._should_check_index = True  # create the index before the next send
