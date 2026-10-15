@@ -104,9 +104,10 @@ def _query_string(params: dict[str, Any]) -> str:
     """Render params as a URL query string (bools lowercased)."""
     parts = []
     for key, value in params.items():
+        rendered_value = value
         if isinstance(value, bool):
-            value = "true" if value else "false"
-        parts.append(f"{key}={value}")
+            rendered_value = "true" if value else "false"
+        parts.append(f"{key}={rendered_value}")
     return "?" + "&".join(parts) if parts else ""
 
 

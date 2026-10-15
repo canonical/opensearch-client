@@ -287,7 +287,6 @@ ignore = [
   "PLR2004", # magic values
   "ANN401",  # `Any`
   "PLR0913", # too many arguments
-  "PLW2901", # reassigned loop variable
 ]
 
 [tool.ruff.lint.pydocstyle]
