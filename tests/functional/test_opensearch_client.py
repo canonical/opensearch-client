@@ -19,7 +19,7 @@ from typing import Iterator
 import pytest
 
 from opensearch_client import OpensearchClient, triage
-from opensearch_client import client as bulk_module
+from opensearch_client import client as client_module
 from opensearch_client.config import client_from_env
 
 if not (
@@ -103,12 +103,12 @@ class _SleepRecorder:
 @contextlib.contextmanager
 def _sleep_replaced(recorder: _SleepRecorder) -> Generator[None]:
     """Make ``bulk`` call the recorder instead of really waiting."""
-    original = bulk_module.sleep
-    setattr(bulk_module, "sleep", recorder)
+    original = client_module.sleep
+    client_module.sleep = recorder
     try:
         yield
     finally:
-        setattr(bulk_module, "sleep", original)
+        client_module.sleep = original
 
 
 def test_index_and_read_back() -> None:

@@ -56,6 +56,7 @@ class _SeqTransport:
         content_type: str = "application/json",
         timeout: int = 30,
     ) -> OpensearchResult[Any]:
+        del method, path, content_type, timeout  # part of the transport's signature
         self.calls += 1
         self.bodies.append(body)
         return self._results[min(self.calls - 1, len(self._results) - 1)]
@@ -66,11 +67,11 @@ def _recorded_delays() -> Generator[list[float]]:
     """Make ``bulk`` record the delays it asks for instead of waiting."""
     delays: list[float] = []
     original = client_module.sleep
-    setattr(client_module, "sleep", delays.append)
+    client_module.sleep = delays.append
     try:
         yield delays
     finally:
-        setattr(client_module, "sleep", original)
+        client_module.sleep = original
 
 
 def _item_error(status: int, error_type: str | None = None) -> OpensearchResult[Any]:
@@ -251,8 +252,9 @@ def test_bulk_retries_only_transient_failures() -> None:
         assert transport.calls == (3 if retried else 1), label
         assert delays == ([1.0, 2.0] if retried else []), label
 
-    # Only the transient document of a mixed batch is sent again, and the
-    # permanent one is still reported as failed.
+
+def test_bulk_resends_only_the_transient_document_of_a_mixed_batch() -> None:
+    """The permanent document is reported as failed without being sent again."""
     permanent = {"name": "permanent"}
     transient = {"name": "transient"}
     rejected = {"type": "mapper_parsing_exception"}

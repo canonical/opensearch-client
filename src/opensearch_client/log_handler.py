@@ -27,15 +27,13 @@ import uuid
 from collections import deque
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from http import HTTPStatus
 from threading import Condition, Event, Lock, Thread, current_thread
 from typing import Any, Protocol
 
 from opensearch_client.client import (
-    BULK_RETRY_BASE_DELAY,
-    BULK_RETRY_MAX_DELAY,
-    TRANSIENT_ERRORS,
     FailureReason,
+    bulk_retry_delays,
+    is_transient_failure,
 )
 from opensearch_client.result import OpensearchResult
 from opensearch_client.transport import REQUEST_TIMEOUT
@@ -50,10 +48,10 @@ _FLUSH_WAIT_SECONDS = 10.0
 # Records that still fail are kept and tried again on a later send.
 _SEND_RETRIES = 2
 
-# How long close() waits for the flush thread to finish its final send
+# How long close() waits for the flush thread to finish its final send: every
+# attempt may run to its request timeout, and bulk waits between them.
 _CLOSE_JOIN_SECONDS = (_SEND_RETRIES + 1) * REQUEST_TIMEOUT + sum(
-    min(BULK_RETRY_BASE_DELAY * 2**retry, BULK_RETRY_MAX_DELAY)
-    for retry in range(_SEND_RETRIES)
+    bulk_retry_delays(_SEND_RETRIES)
 )
 
 # The ECS version the documents conform to.
@@ -501,17 +499,10 @@ class OpensearchLogHandler(logging.Handler):
         kept = []
         rejected = 0
         for failure in result.data["failures"]:
-            status = failure["status"]
             error_type = (failure.get("error") or {}).get("type")
             if error_type == FailureReason.INDEX_NOT_FOUND:
                 self._index_ready = False  # create the index before the next send
-            is_temporary = (
-                status is None
-                or status in (HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS)
-                or status >= 500
-                or error_type in TRANSIENT_ERRORS
-            )
-            if is_temporary:
+            if is_transient_failure(failure):
                 kept.append(failure["document"])
             else:
                 rejected += 1

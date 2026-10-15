@@ -42,7 +42,7 @@ class FailureReason(str, Enum):
     VERSION_CONFLICT = "version_conflict_engine_exception"
 
 
-# How ``bulk`` classifies a failed document. Only a transient failure is retried.
+# How ``is_transient_failure`` classifies a failed document.
 # 1. An error type listed below decides first, permanent before transient, even
 #    when the status points the other way (a 403 ``cluster_block_exception`` and a
 #    404 ``index_not_found_exception`` are transient).
@@ -178,35 +178,50 @@ def _tally_bulk_items(
             failures.append((item, {"status": outcome.get("status"), "error": error}))
 
 
-def _is_transient(info: dict[str, Any]) -> bool:
-    """Check whether a failed document is worth retrying.
+def is_transient_failure(failure: dict[str, Any]) -> bool:
+    """Check whether a failed document is worth sending again.
 
     A listed error type decides first, then the status. Anything unrecognized is
     transient, so the document is retried rather than given up on.
 
     Args:
-        info (dict[str, Any]): the failure's ``status`` and ``error`` (a per-item
-            error) or ``reason`` (a failed request).
+        failure (dict[str, Any]): the failure's ``status`` and ``error`` (a
+            per-item error) or ``reason`` (a failed request), as ``bulk`` reports
+            it.
 
     Returns:
         bool: True if the failure is transient, False if it is permanent.
     """
-    # If possible, classify error by type
-    error = info.get("error")
+    error = failure.get("error")
     error_type = error.get("type") if isinstance(error, dict) else None
     if error_type in PERMANENT_ERRORS:
         return False
     if error_type in TRANSIENT_ERRORS:
         return True
-
-    # Classify by status (if not explicitly defined, assume transient)
-    status = info.get("status")
-
+    status = failure.get("status")
     if status is None or status in TRANSIENT_STATUSES:
         return True
-    if status in PERMANENT_STATUSES:
-        return False
-    return True
+    return status not in PERMANENT_STATUSES
+
+
+def bulk_retry_delays(max_retries: int) -> list[float]:
+    """Return the seconds ``bulk`` waits before each of its retries.
+
+    The first wait is BULK_RETRY_BASE_DELAY, and each later one is twice the one
+    before, up to BULK_RETRY_MAX_DELAY.
+
+    Args:
+        max_retries (int): how many retries ``bulk`` may make.
+
+    Returns:
+        list[float]: one wait per retry, in order.
+    """
+    delays = []
+    delay = BULK_RETRY_BASE_DELAY
+    for _ in range(max_retries):
+        delays.append(delay)
+        delay = min(delay * 2, BULK_RETRY_MAX_DELAY)
+    return delays
 
 
 def _query_string(params: dict[str, Any]) -> str:
@@ -516,8 +531,8 @@ class OpensearchClient:
         document, whether from a failed batch or a per-item error, is retried up to
         ``max_retries`` times (``max_retries=0`` disables retries), but only if its
         failure is classified as transient. A permanent failure is reported without
-        being resent. Each retry waits longer than the last: 1 second, then 2, 4, 8
-        and so on, up to 60 seconds.
+        being resent. Each retry waits longer than the last; see
+        ``bulk_retry_delays``.
 
         Args:
             documents (Iterable[dict[str, Any]]): the documents to index.
@@ -545,22 +560,20 @@ class OpensearchClient:
 
         failures = self._send_bulk(pending, max_bytes, action, summary)
         permanent_failures: list[BulkFailure] = []
-        retry_delay = BULK_RETRY_BASE_DELAY
-        for _ in range(max_retries):
+        for delay in bulk_retry_delays(max_retries):
             transient: list[BulkFailure] = []
-            for failure in failures:
-                if _is_transient(failure[1]):
-                    transient.append(failure)
+            for item, failure in failures:
+                if is_transient_failure(failure):
+                    transient.append((item, failure))
                 else:
-                    permanent_failures.append(failure)
+                    permanent_failures.append((item, failure))
             failures = transient
             if not failures:
                 break
-            sleep(retry_delay)
+            sleep(delay)
             failures = self._send_bulk(
                 [item for item, _ in failures], max_bytes, action, summary
             )
-            retry_delay = min(retry_delay * 2, BULK_RETRY_MAX_DELAY)
         failures.extend(permanent_failures)
 
         for item, info in failures:
