@@ -170,3 +170,9 @@ variables are set:
 - **only `OPENSEARCH_DASHBOARD_*`**: the endpoint is a dashboard proxy.
 - **both**: connect directly, falling back to the dashboard proxy when the
   direct endpoint is unreachable.
+
+`client_from_env(direct_only=True)` instead connects only to the endpoint in
+`OPENSEARCH_URL` or `OPENSEARCH_HOST`, without probing, and ignores the
+`OPENSEARCH_DASHBOARD_*` variables. It returns `None` if there is no such
+endpoint. Without a probe, an HTTP error on the first request, such as a 404,
+is returned as it is rather than read as "no direct endpoint".

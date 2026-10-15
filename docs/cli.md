@@ -16,6 +16,7 @@ The subcommands are:
 - `search`: a term-lookup convenience
 - `index`: index-level operations
 - `cluster`: cluster-level inspection and resource management
+- `security`: an account that may only write logs to one index
 - `triage`: the guided threat-hunt workflow
 
 By default, results are printed as YAML on stdout; failures are reported on
@@ -249,6 +250,28 @@ os-cli cluster component-template
 os-cli cluster set component-template web-fields @web-fields.json
 os-cli cluster delete component-template web-fields   # dry run: lists its users
 ```
+
+## `os-cli security`
+
+`security` creates, checks and deletes an account that may only write logs to
+one index. To set one up in an environment, see
+[Create a logging account](create-a-logging-account.md).
+
+It connects only to the cluster's REST port (`OPENSEARCH_URL` or
+`OPENSEARCH_HOST`), never through a Dashboards proxy, so a configuration with
+only `OPENSEARCH_DASHBOARD_*` set is refused.
+
+- `create-account USER --index INDEX --password-file PATH`: create the account
+  for one exact index name. The password is read from the file, or from stdin
+  when `PATH` is `-`, and is never printed. Nothing that already exists is
+  overwritten.
+- `check-account USER --index INDEX`: report which parts of the account, and
+  whether the index, exist.
+- `delete-account USER`: report which parts of the account exist; with
+  `--apply`, delete them.
+
+A password that cannot be read, or is empty, exits with status 2 before any
+request; any other failure exits with status 1.
 
 ## `os-cli triage`
 

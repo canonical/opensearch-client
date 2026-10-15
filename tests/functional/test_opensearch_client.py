@@ -12,13 +12,15 @@ the variables, runs these tests, and tears everything down.
 
 import contextlib
 import os
+import secrets
 import uuid
 from typing import Iterator
 
 import pytest
 
-from opensearch_client import OpensearchClient, triage
+from opensearch_client import OpensearchClient, security, triage
 from opensearch_client.config import client_from_env
+from opensearch_client.transport import DirectTransport
 
 if not (
     os.environ.get("OPENSEARCH_URL")
@@ -74,8 +76,51 @@ def _temporary_component_template(name: str) -> Iterator[None]:
         _client.request("DELETE", f"_component_template/{name}")
 
 
+@contextlib.contextmanager
+def _temporary_accounts(users: list[str], roles: list[str]) -> Iterator[None]:
+    """Delete the named users, roles and role mappings on exit.
+
+    This sends raw requests instead of calling opensearch_client.security, so the cleanup
+    still works when the code under test does not.
+    """
+    try:
+        yield
+    finally:
+        for role in roles:
+            _client.request("DELETE", f"_plugins/_security/api/rolesmapping/{role}")
+        for user in users:
+            _client.request("DELETE", f"_plugins/_security/api/internalusers/{user}")
+        for role in roles:
+            _client.request("DELETE", f"_plugins/_security/api/roles/{role}")
+
+
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _password() -> str:
+    """Make a test password that passes the Security plugin's default policy.
+
+    The policy wants upper and lower case, a digit and a special character; the
+    fixed prefix guarantees those, and the random part keeps each run distinct.
+    """
+    return f"Aa1!{secrets.token_urlsafe(24)}"
+
+
+def _login_as(user: str, password: str) -> OpensearchClient:
+    """Build a client that authenticates as the given account, not the admin."""
+    return OpensearchClient(
+        DirectTransport(
+            os.environ["OPENSEARCH_URL"],
+            (user, password),
+            os.environ.get("OPENSEARCH_CA_CERT") or True,
+        )
+    )
+
+
+def _can_log_in(user: str, password: str) -> bool:
+    """Whether the cluster accepts these credentials."""
+    return bool(_login_as(user, password).get("_plugins/_security/authinfo"))
 
 
 def test_index_and_read_back() -> None:
@@ -322,3 +367,69 @@ def test_rollover_dry_run_then_apply_moves_the_write_index_with_new_settings() -
         assert sorted(holders.data) == [first, second]
         assert holders.data[first]["aliases"][alias]["is_write_index"] is False
         assert holders.data[second]["aliases"][alias]["is_write_index"] is True
+
+
+def test_a_log_writer_account_may_create_and_write_its_index_and_nothing_else() -> None:
+    index = _unique("opensearch_client-func-logs")
+    other_index = _unique("opensearch_client-func-other")
+    uncreated_index = _unique("opensearch_client-func-uncreated")
+    user = _unique("opensearch_client-func-writer")
+    role = f"{user}-writer"
+    password = _password()
+
+    with (
+        _temporary_indices(index, other_index, uncreated_index),
+        _temporary_accounts([user], [role]),
+    ):
+        # Settle the probe first, so the lookups' 404s are not read as no endpoint.
+        assert _client.get("_cluster/health")
+        assert _client.create_index({}, index=other_index)
+
+        created = security.create_log_writer_account(_client, user, password, index)
+        assert created, created.reason
+        checked = security.check_log_writer_account(_client, user, index)
+        assert checked, checked.reason
+        assert checked.data == {
+            "user": True,
+            "role": True,
+            "role_mapping": True,
+            "index": False,
+        }
+
+        # What the log handler does on a fresh environment: look the index up,
+        # create it, and ship documents to it.
+        writer = _login_as(user, password)
+        exists = writer.index_exists(index)
+        assert exists, exists.reason
+        assert exists.data is False
+        made = writer.create_index({}, index=index)
+        assert made, made.reason
+        shipped = writer.bulk(
+            [{"message": f"line {n}", "labels": {"n": n}} for n in range(3)],
+            index=index,
+        )
+        assert shipped, shipped.reason
+        assert shipped.data["indexed"] == 3
+
+        # And nothing else: no reading, and no other index.
+        assert writer.search({"query": {"match_all": {}}}, index=index).status == 403
+        assert writer.index_document({"n": 1}, index=other_index).status == 403
+        assert writer.create_index({}, index=uncreated_index).status == 403
+        assert _client.refresh(index=index)
+        rows = _client.search({"size": 10, "query": {"match_all": {}}}, index=index)
+        assert rows, rows.reason
+        assert len(rows.data) == 3
+
+        # Creation never overwrites: a second attempt fails and the password stays.
+        replacement = _password()
+        again = security.create_log_writer_account(_client, user, replacement, index)
+        assert not again
+        assert again.status == 409
+        assert _can_log_in(user, password)
+        assert not _can_log_in(user, replacement)
+
+        # Deleting takes every part away; the account can no longer log in.
+        deleted = security.delete_log_writer_account(_client, user, apply=True)
+        assert deleted, deleted.reason
+        assert deleted.data == {"role_mapping": True, "user": True, "role": True}
+        assert not _can_log_in(user, password)
