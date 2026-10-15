@@ -35,6 +35,26 @@ class RecordingTransport:
         return Success(self.payload)
 
 
+class ScriptedTransport:
+    """Answers each request with the next queued result and records the calls."""
+
+    def __init__(self, results: list[OpensearchResult[Any]]) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        timeout: int = 30,
+    ) -> OpensearchResult[Any]:
+        decoded = None if body is None else json.loads(body)
+        self.calls.append((method, path, decoded))
+        return self.results.pop(0)
+
+
 def run_cli(
     module: ModuleType, command: str, argv: list[str], transport: Transport
 ) -> str:

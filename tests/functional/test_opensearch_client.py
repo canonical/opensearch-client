@@ -11,14 +11,17 @@ the variables, runs these tests, and tears everything down.
 """
 
 import contextlib
+import json
 import os
+import secrets
 import uuid
 from typing import Iterator
 
 import pytest
 
-from opensearch_client import OpensearchClient, triage
+from opensearch_client import OpensearchClient, security, triage
 from opensearch_client.config import client_from_env
+from opensearch_client.transport import DirectTransport
 
 if not (
     os.environ.get("OPENSEARCH_URL")
@@ -74,8 +77,51 @@ def _temporary_component_template(name: str) -> Iterator[None]:
         _client.request("DELETE", f"_component_template/{name}")
 
 
+@contextlib.contextmanager
+def _temporary_accounts(users: list[str], roles: list[str]) -> Iterator[None]:
+    """Delete the named users, roles and role mappings on exit.
+
+    This sends raw requests instead of calling opensearch_client.security, so the cleanup
+    still works when the code under test does not.
+    """
+    try:
+        yield
+    finally:
+        for role in roles:
+            _client.request("DELETE", f"_plugins/_security/api/rolesmapping/{role}")
+        for user in users:
+            _client.request("DELETE", f"_plugins/_security/api/internalusers/{user}")
+        for role in roles:
+            _client.request("DELETE", f"_plugins/_security/api/roles/{role}")
+
+
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _password() -> str:
+    """Make a test password that passes the Security plugin's default policy.
+
+    The policy wants upper and lower case, a digit and a special character; the
+    fixed prefix guarantees those, and the random part keeps each run distinct.
+    """
+    return f"Aa1!{secrets.token_urlsafe(24)}"
+
+
+def _login_as(user: str, password: str) -> OpensearchClient:
+    """Build a client that authenticates as the given account, not the admin."""
+    return OpensearchClient(
+        DirectTransport(
+            os.environ["OPENSEARCH_URL"],
+            (user, password),
+            os.environ.get("OPENSEARCH_CA_CERT") or True,
+        )
+    )
+
+
+def _can_log_in(user: str, password: str) -> bool:
+    """Whether the cluster accepts these credentials."""
+    return bool(_login_as(user, password).get("_plugins/_security/authinfo"))
 
 
 def test_index_and_read_back() -> None:
@@ -322,3 +368,138 @@ def test_rollover_dry_run_then_apply_moves_the_write_index_with_new_settings() -
         assert sorted(holders.data) == [first, second]
         assert holders.data[first]["aliases"][alias]["is_write_index"] is False
         assert holders.data[second]["aliases"][alias]["is_write_index"] is True
+
+
+def test_service_accounts_are_created_fetched_used_and_deleted() -> None:
+    # The target flow for opensearch_client.security. It is expected to fail until every
+    # function it calls is implemented.
+    index = _unique("opensearch_client-func-svc")
+    other_index = _unique("opensearch_client-func-svc-other")
+    writer_user = _unique("opensearch_client-func-writer")
+    writer_role = _unique("opensearch_client-func-writer-role")
+    reader_user = _unique("opensearch_client-func-reader")
+    reader_role = _unique("opensearch_client-func-reader-role")
+    writer_password = _password()
+    reader_password = _password()
+
+    # A write-only account for shipping logs, and a read-only one for querying them.
+    built_writer = security.build_logging_writer_role(writer_role, (index,))
+    assert built_writer, built_writer.reason
+    writer = built_writer.data
+    reader = security.Role(
+        name=reader_role, index_patterns=(index,), index_actions=("read",)
+    )
+    names = ((writer_user, writer_role), (reader_user, reader_role))
+    accounts = (
+        (security.User(name=writer_user, password=writer_password), writer),
+        (security.User(name=reader_user, password=reader_password), reader),
+    )
+
+    with (
+        _temporary_indices(index, other_index),
+        _temporary_accounts([writer_user, reader_user], [writer_role, reader_role]),
+    ):
+        # The index exists first: the writer role cannot create it.
+        assert _client.create_index({}, index=index).ok
+
+        # Before creation, only the index exists.
+        for user, role in names:
+            before = security.check_service_account(_client, user, role, index)
+            assert before, before.reason
+            assert before.data == {
+                "user": False,
+                "role": False,
+                "role_mapping": False,
+                "index": True,
+            }
+
+        for user, role in accounts:
+            created = security.create_service_account(_client, user, role)
+            assert created, created.reason
+
+        # Fetch each part of each account.
+        for user, role in names:
+            state = security.check_service_account(_client, user, role, index)
+            assert state, state.reason
+            assert state.data == {
+                "user": True,
+                "role": True,
+                "role_mapping": True,
+                "index": True,
+            }
+
+            fetched_user = security.get_user(_client, user)
+            assert fetched_user, fetched_user.reason
+            assert list(fetched_user.data) == [user]
+
+            fetched_role = security.get_role(_client, role)
+            assert fetched_role, fetched_role.reason
+            assert list(fetched_role.data) == [role]
+
+            fetched_mapping = security.get_role_mapping(_client, role)
+            assert fetched_mapping, fetched_mapping.reason
+            assert fetched_mapping.data[role]["users"] == [user]
+
+        permissions = security.get_role(_client, writer_role).data[writer_role]
+        assert permissions["index_permissions"][0]["index_patterns"] == [index]
+        for user, _ in names:
+            fetched_text = json.dumps(security.get_user(_client, user).data)
+            assert writer_password not in fetched_text
+            assert reader_password not in fetched_text
+
+        listed_users = security.list_users(_client)
+        assert listed_users and {writer_user, reader_user} <= set(listed_users.data)
+        listed_roles = security.list_roles(_client)
+        assert listed_roles and {writer_role, reader_role} <= set(listed_roles.data)
+        listed_mappings = security.list_role_mappings(_client)
+        assert listed_mappings
+        assert {writer_role, reader_role} <= set(listed_mappings.data)
+
+        # Creation never overwrites: a second attempt fails and the password stays.
+        replacement = _password()
+        again = security.create_service_account(
+            _client, security.User(name=writer_user, password=replacement), writer
+        )
+        assert not again
+        assert _can_log_in(writer_user, writer_password)
+        assert not _can_log_in(writer_user, replacement)
+
+        # The writer can check its index and ship documents, and can do nothing else.
+        writer_client = _login_as(writer_user, writer_password)
+        assert writer_client.index_exists(index).data is True
+        shipped = writer_client.bulk([{"n": n} for n in range(3)], index=index)
+        assert shipped, shipped.reason
+        assert shipped.data["indexed"] == 3
+        assert (
+            writer_client.search({"query": {"match_all": {}}}, index=index).status
+            == 403
+        )
+        assert writer_client.index_document({"n": 1}, index=other_index).status == 403
+        assert _client.refresh(index=index).ok
+
+        # The reader can query what the writer shipped, and cannot write.
+        reader_client = _login_as(reader_user, reader_password)
+        rows = reader_client.search(
+            {"size": 10, "query": {"match_all": {}}}, index=index
+        )
+        assert rows, rows.reason
+        assert sorted(row["n"] for row in rows.data) == [0, 1, 2]
+        assert reader_client.index_document({"n": 9}, index=index).status == 403
+
+        # Delete every part; each account is then gone and can no longer log in.
+        for user, role in names:
+            assert security.delete_role_mapping(_client, role)
+            assert security.delete_user(_client, user)
+            assert security.delete_role(_client, role)
+
+            after = security.check_service_account(_client, user, role, index)
+            assert after, after.reason
+            assert after.data == {
+                "user": False,
+                "role": False,
+                "role_mapping": False,
+                "index": True,
+            }
+            assert security.get_user(_client, user).status == 404
+        assert not _can_log_in(writer_user, writer_password)
+        assert not _can_log_in(reader_user, reader_password)

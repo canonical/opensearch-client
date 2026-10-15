@@ -17,6 +17,7 @@ The subcommands are:
 - `search`: a term-lookup convenience
 - `index`: index-level operations
 - `cluster`: cluster-level inspection and resource management
+- `security`: Security plugin roles, users, and role mappings for service accounts
 - `triage`: the guided threat-hunt workflow
 
 By default, results are printed as YAML on stdout; failures are reported on
@@ -250,6 +251,60 @@ os-cli cluster component-template
 os-cli cluster set component-template web-fields @web-fields.json
 os-cli cluster delete component-template web-fields   # dry run: lists its users
 ```
+
+## `os-cli security`
+
+`security` manages the Security plugin accounts a service needs, such as a
+collector that ships logs. It connects directly to the cluster's REST port
+(`OPENSEARCH_URL` or `OPENSEARCH_HOST`, port 9200 by default) with the
+administrator login from `OPENSEARCH_USER` and `OPENSEARCH_PASSWORD`. It never
+goes through a Dashboards proxy, so a configuration with only
+`OPENSEARCH_DASHBOARD_*` set is refused.
+
+`role`, `user` and `mapping` show roles, internal users and role mappings (all,
+or one by name). They print the server's JSON, with every `password` and `hash`
+value replaced by `<redacted>`.
+
+`create account` creates three things for an account that only ships logs: a
+role, a user, and the mapping that gives the user the role. The role is named
+`USER-writer` unless `--role` says otherwise. It allows the account to check
+that its indexes exist and to write documents to the `--index` patterns, and
+nothing else: the cluster permission `indices:data/write/bulk`, and on the
+indexes `indices:admin/get` and the `index` action group. A bare `*` pattern is
+refused, because it would allow writing to every index.
+
+Creation never overwrites. If the role, user or mapping already exists, the
+command fails and says what it had already created; it does not undo that.
+Replacing an account means deleting it and creating it again.
+
+The password is read from `--password-file`: a file path, or `-` for stdin. It
+is never taken from an argument, never generated, and never printed; only the
+trailing newline is removed from it. The Security plugin's password policy
+applies.
+
+`delete role`, `delete user` and `delete mapping` remove one object. They are a
+dry run, reporting whether the object exists, until `--apply` is given. Deleting
+an account takes all three, mapping first. Deleting a role does not delete its
+mapping, and deleting a user does not change mappings that name them.
+
+`check` reports which of the user, the role, its mapping and the index exist.
+
+```
+os-cli security create account collector-logging --index 'collector-logs-*' \
+  --password-file ./password.txt
+printf '%s\n' "$PASSWORD" | os-cli security create account svc --index logs \
+  --password-file -
+os-cli security check collector-logging --role collector-logging-writer \
+  --index collector-logs-2026
+os-cli security user collector-logging
+os-cli security delete mapping collector-logging-writer --apply
+os-cli security delete user collector-logging --apply
+os-cli security delete role collector-logging-writer --apply
+```
+
+An invalid argument (a name the API cannot address, a blank pattern, a missing
+or empty password) exits with status 2 before any request; a failed request
+exits with status 1.
 
 ## `os-cli triage`
 

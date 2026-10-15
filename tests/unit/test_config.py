@@ -14,6 +14,7 @@ from typing import Iterator
 from opensearch_client.client import OpensearchClient
 from opensearch_client.config import client_from_env
 from opensearch_client.transport import (
+    DirectTransport,
     FailoverTransport,
     ProbeTransport,
     ProxyTransport,
@@ -117,3 +118,19 @@ def test_returns_none_without_credentials_or_endpoint() -> None:
 
 def test_index_defaults_to_star_when_unset() -> None:
     assert _built(OPENSEARCH_URL="https://h:9200").default_index == "*"
+
+
+def test_direct_only_connects_directly_and_ignores_the_dashboard() -> None:
+    with env(
+        **_CREDS,
+        OPENSEARCH_URL="https://h:9200",
+        OPENSEARCH_DASHBOARD_URL="https://dash",
+    ):
+        client = client_from_env(direct_only=True)
+    assert client is not None
+    assert isinstance(client._transport, DirectTransport)
+    assert client._transport.base_url == "https://h:9200"
+
+    # A dashboard endpoint alone is not a direct connection.
+    with env(**_CREDS, OPENSEARCH_DASHBOARD_URL="https://dash"):
+        assert client_from_env(direct_only=True) is None
