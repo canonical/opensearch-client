@@ -25,11 +25,12 @@ import socket
 import sys
 import uuid
 from collections import deque
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from threading import Condition, Event, Lock, Thread, current_thread
-from typing import Any
+from typing import Any, Protocol
 
-from opensearch_client.client import OpensearchClient
+from opensearch_client.result import OpensearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,24 @@ class ECSLogFormatter(logging.Formatter):
         return cleaned
 
 
+class LogShippingClient(Protocol):
+    """What the handler needs from a client; an ``OpensearchClient`` has it."""
+
+    def ensure_index(self, index: str | None = None) -> OpensearchResult[bool]:
+        """Create the index unless it exists; see ``OpensearchClient``."""
+        ...
+
+    def bulk(
+        self,
+        documents: Iterable[dict[str, Any]],
+        index: str | None = None,
+        *,
+        max_retries: int = 3,
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Index the documents; see ``OpensearchClient``."""
+        ...
+
+
 class OpensearchLogHandler(logging.Handler):
     """A :class:`logging.Handler` that queues records and ships them to OpenSearch.
 
@@ -278,7 +297,7 @@ class OpensearchLogHandler(logging.Handler):
 
     def __init__(
         self,
-        client: OpensearchClient,
+        client: LogShippingClient,
         index: str,
         *,
         level: int = logging.NOTSET,
@@ -290,7 +309,8 @@ class OpensearchLogHandler(logging.Handler):
         """Create the handler and start its background flush thread.
 
         Args:
-            client (OpensearchClient): the client used to index documents.
+            client (LogShippingClient): the client used to index documents,
+                usually an ``OpensearchClient``.
             index (str): the base index name records are written to.
             level (int): the minimum level the handler accepts.
             flush_threshold (int): flush as soon as a new record brings the queue
