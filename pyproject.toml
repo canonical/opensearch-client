@@ -61,6 +61,8 @@ deps = [
   "shellcheck-py==0.11.0.1",
   "shfmt-py==4.2.0",
 ]
+# Run every check even after one fails, so a single run reports all findings.
+ignore_errors = true
 commands = [
   [
     "bash",
@@ -73,34 +75,31 @@ commands = [
     "sh",
   ],
   [
-    "bash",
-    "-c",
-    "ruff check src tests || touch .fail",
+    "ruff",
+    "check",
+    "src",
+    "tests",
+  ],
+  [
+    "ruff",
+    "format",
+    "--check",
+    "src",
+    "tests",
+  ],
+  [
+    "codespell",
+    ".",
   ],
   [
     "bash",
     "-c",
-    "ruff format --check src tests || touch .fail",
+    "find . -name '*.sh' -not -path './.*' -exec shellcheck -f gcc {} +",
   ],
   [
     "bash",
     "-c",
-    "codespell . || touch .fail",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shellcheck -f gcc || touch .fail",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -d -s -i 4 -l || touch .fail",
-  ],
-  [
-    "bash",
-    "-c",
-    "! test -f .fail || ( rm .fail && exit 1 )",
+    "find . -name '*.sh' -not -path './.*' -exec shfmt -d -s -i 4 -l {} +",
   ],
 ]
 
@@ -138,12 +137,12 @@ commands = [
   [
     "bash",
     "-c",
-    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -w -s -i 4",
+    "find . -name '*.sh' -not -path './.*' -exec shfmt -w -s -i 4 {} +",
   ],
   [
     "bash",
     "-c",
-    "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat",
+    "find . -name '*.md' -not -path './.*' -exec mdformat {} +",
   ],
 ]
 
@@ -267,30 +266,29 @@ typeCheckingMode = "standard"
 line-length = 88
 
 [tool.ruff.lint]
-# E, W, F: pycodestyle and pyflakes. I: import sorting. D: docstrings. A: names
-# that shadow builtins. BLE: blind `except Exception`. N: naming. ARG: unused
-# arguments. ANN: type annotations. PGH003, PGH004: blanket `type: ignore` and
-# `noqa`. RUF100: unused `noqa`. PL: pylint rules. SLF: private member access.
 select = [
   "E",
   "W",
-  "F",
-  "I",
-  "D",
-  "A",
-  "BLE",
-  "N",
-  "ARG",
-  "ANN",
-  "PGH003",
-  "PGH004",
-  "RUF100",
-  "PL",
-  "SLF",
+  "F",      # pycodestyle and pyflakes
+  "I",      # import sorting
+  "D",      # docstrings
+  "A",      # names that shadow builtins
+  "BLE",    # blind `except Exception`
+  "N",      # naming
+  "ARG",    # unused arguments
+  "ANN",    # type annotations
+  "PGH003", # blanket `type: ignore`
+  "PGH004", # blanket `noqa`
+  "RUF100", # unused `noqa`
+  "PL",     # pylint rules
+  "SLF",    # private member access
 ]
-# PLR2004: magic values. ANN401: `Any`. PLR0913: too many arguments. PLW2901:
-# reassigned loop variable.
-ignore = ["PLR2004", "ANN401", "PLR0913", "PLW2901"]
+ignore = [
+  "PLR2004", # magic values
+  "ANN401",  # `Any`
+  "PLR0913", # too many arguments
+  "PLW2901", # reassigned loop variable
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
