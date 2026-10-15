@@ -14,10 +14,7 @@ name = "opensearch_client"
 version = "0.1.2"
 description = "OpenSearch client library."
 requires-python = ">=3.10"
-dependencies = [
-    "requests",
-    "PyYAML",
-]
+dependencies = ["requests", "PyYAML"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -36,16 +33,16 @@ packages = ["src/opensearch_client"]
 [tool.tox]
 requires = ["tox>=4.57", "tox-uv>=1.0.0"]
 env_list = [
-    "lint",
-    "type",
-    "hygiene",
-    "doc-checks",
-    "vale",
-    "actionlint",
-    # 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
-    "unit-py310",
-    "unit-py312",
-    "unit-py314",
+  "lint",
+  "type",
+  "hygiene",
+  "doc-checks",
+  "vale",
+  "actionlint",
+  # 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
+  "unit-py310",
+  "unit-py312",
+  "unit-py314",
 ]
 
 [tool.tox.env_run_base]
@@ -59,20 +56,52 @@ description = "Check code against coding style standards"
 allowlist_externals = ["bash"]
 skip_install = true
 deps = [
-    "ruff==0.15.20",
-    "codespell",
-    "shellcheck-py==0.11.0.1",
-    "shfmt-py==4.2.0",
+  "ruff==0.15.20",
+  "codespell",
+  "shellcheck-py==0.11.0.1",
+  "shfmt-py==4.2.0",
 ]
 commands = [
-    ["bash", "tests/lint/ascii-check.sh", "py"],
-    ["bash", "tests/lint/ascii-check.sh", "sh"],
-    ["bash", "-c", "ruff check src tests || touch .fail"],
-    ["bash", "-c", "ruff format --check src tests || touch .fail"],
-    ["bash", "-c", "codespell . || touch .fail"],
-    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shellcheck -f gcc || touch .fail"],
-    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -d -s -i 4 -l || touch .fail"],
-    ["bash", "-c", "! test -f .fail || ( rm .fail && exit 1 )"],
+  [
+    "bash",
+    "tests/lint/ascii-check.sh",
+    "py",
+  ],
+  [
+    "bash",
+    "tests/lint/ascii-check.sh",
+    "sh",
+  ],
+  [
+    "bash",
+    "-c",
+    "ruff check src tests || touch .fail",
+  ],
+  [
+    "bash",
+    "-c",
+    "ruff format --check src tests || touch .fail",
+  ],
+  [
+    "bash",
+    "-c",
+    "codespell . || touch .fail",
+  ],
+  [
+    "bash",
+    "-c",
+    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shellcheck -f gcc || touch .fail",
+  ],
+  [
+    "bash",
+    "-c",
+    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -d -s -i 4 -l || touch .fail",
+  ],
+  [
+    "bash",
+    "-c",
+    "! test -f .fail || ( rm .fail && exit 1 )",
+  ],
 ]
 
 [tool.tox.env.fmt]
@@ -80,33 +109,55 @@ description = "Automatically format code"
 allowlist_externals = ["bash"]
 skip_install = true
 deps = [
-    "ruff==0.15.20",
-    "codespell",
-    "shfmt-py==4.2.0",
-    "mdformat",
-    "mdformat-gfm",
-    "mdformat-pyproject",
+  "ruff==0.15.20",
+  "codespell",
+  "shfmt-py==4.2.0",
+  "mdformat",
+  "mdformat-gfm",
+  "mdformat-pyproject",
 ]
 commands = [
-    ["ruff", "check", "--fix", "src", "tests"],
-    ["ruff", "format", "src", "tests"],
-    ["codespell", "-w", "."],
-    ["bash", "-c", "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -w -s -i 4"],
-    ["bash", "-c", "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat"],
+  [
+    "ruff",
+    "check",
+    "--fix",
+    "src",
+    "tests",
+  ],
+  [
+    "ruff",
+    "format",
+    "src",
+    "tests",
+  ],
+  [
+    "codespell",
+    "-w",
+    ".",
+  ],
+  [
+    "bash",
+    "-c",
+    "find . -name '*.sh' -not -path './.*' -print0 | xargs -0 -r shfmt -w -s -i 4",
+  ],
+  [
+    "bash",
+    "-c",
+    "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat",
+  ],
 ]
 
 [tool.tox.env.type]
 description = "Type-check with basedpyright"
-deps = [
-    "basedpyright==1.39.9",
-    "pytest==9.1.1",
-]
+deps = ["basedpyright==1.39.9", "pytest==9.1.1"]
 commands = [
-    [
-        "basedpyright",
-        "--pythonpath", "{envpython}",
-        "{tox_root}/src", "{tox_root}/tests",
-    ],
+  [
+    "basedpyright",
+    "--pythonpath",
+    "{envpython}",
+    "{tox_root}/src",
+    "{tox_root}/tests",
+  ],
 ]
 
 [tool.tox.env.hygiene]
@@ -118,16 +169,26 @@ commands = [["vulture"]]
 description = "Run doc checks"
 package = "skip"
 allowlist_externals = ["bash"]
-deps = [
-    "mdformat",
-    "mdformat-gfm",
-    "mdformat-pyproject",
-    "pymarkdownlnt",
-]
+deps = ["mdformat", "mdformat-gfm", "mdformat-pyproject", "pymarkdownlnt"]
 commands = [
-    ["bash", "tests/lint/ascii-check.sh", "md"],
-    ["bash", "-c", "find . -name '*.md' -not -path './.*' -print0 | xargs -0 -r mdformat --check"],
-    ["pymarkdown", "scan", "--recurse", "README.md", "docs", "tests"],
+  [
+    "bash",
+    "tests/lint/ascii-check.sh",
+    "md",
+  ],
+  [
+    "bash",
+    "-c",
+    "find . -name '*.md' -not -path './.*' -exec mdformat --check {} +",
+  ],
+  [
+    "pymarkdown",
+    "scan",
+    "--recurse",
+    "README.md",
+    "docs",
+    "tests",
+  ],
 ]
 
 [tool.tox.env.vale]
@@ -139,42 +200,52 @@ deps = ["vale==3.22.0.0"]
 # configuration, with the overrides that the script writes layered on top.
 set_env = { XDG_CONFIG_HOME = "{tox_root}/.vale" }
 commands = [
-    ["bash", "tests/lint/get-vale-config.sh"],
-    ["vale", "--config=.vale/overrides.ini", "--glob=*.md", "README.md", "docs", "tests"],
+  [
+    "bash",
+    "tests/lint/get-vale-config.sh",
+  ],
+  [
+    "vale",
+    "--config=.vale/overrides.ini",
+    "--glob=*.md",
+    "README.md",
+    "docs",
+    "tests",
+  ],
 ]
 
 [tool.tox.env_base.unit]
 factors = [["py310", "py312", "py314"]]
 description = "Run unit tests"
-deps = [
-    "coverage[toml]",
-    "pytest",
-]
+deps = ["coverage[toml]", "pytest"]
 commands = [
-    [
-        "coverage",
-        "run",
-        "--source=src/opensearch_client",
-        "-m",
-        "pytest",
-        "-s",
-        "tests/unit/",
-    ],
-    ["coverage", "report"],
+  [
+    "coverage",
+    "run",
+    "--source=src/opensearch_client",
+    "-m",
+    "pytest",
+    "-s",
+    "tests/unit/",
+  ],
+  [
+    "coverage",
+    "report",
+  ],
 ]
 
 [tool.tox.env.functional]
 description = "Run functional tests against a live OpenSearch cluster (see tests/functional/)"
 deps = ["pytest"]
 pass_env = [
-    "OPENSEARCH_URL",
-    "OPENSEARCH_HOST",
-    "OPENSEARCH_PORT",
-    "OPENSEARCH_USER",
-    "OPENSEARCH_PASSWORD",
-    "OPENSEARCH_CA_CERT",
-    "OPENSEARCH_INSECURE",
-    "OPENSEARCH_INDEX",
+  "OPENSEARCH_URL",
+  "OPENSEARCH_HOST",
+  "OPENSEARCH_PORT",
+  "OPENSEARCH_USER",
+  "OPENSEARCH_PASSWORD",
+  "OPENSEARCH_CA_CERT",
+  "OPENSEARCH_INSECURE",
+  "OPENSEARCH_INDEX",
 ]
 commands = [["pytest", "-s", "tests/functional/"]]
 
@@ -201,8 +272,21 @@ line-length = 88
 # arguments. ANN: type annotations. PGH003, PGH004: blanket `type: ignore` and
 # `noqa`. RUF100: unused `noqa`. PL: pylint rules. SLF: private member access.
 select = [
-    "E", "W", "F", "I", "D", "A", "BLE", "N", "ARG", "ANN", "PGH003", "PGH004",
-    "RUF100", "PL", "SLF",
+  "E",
+  "W",
+  "F",
+  "I",
+  "D",
+  "A",
+  "BLE",
+  "N",
+  "ARG",
+  "ANN",
+  "PGH003",
+  "PGH004",
+  "RUF100",
+  "PL",
+  "SLF",
 ]
 # PLR2004: magic values. ANN401: `Any`. PLR0913: too many arguments. PLW2901:
 # reassigned loop variable.
@@ -232,11 +316,11 @@ min_confidence = 60
 wrap = 80
 
 [tool.pymarkdown.extensions.markdown-tables]
-enabled = true  # parse tables, so MD013 can skip them
+enabled = true # parse tables, so MD013 can skip them
 
 [tool.pymarkdown.plugins.md013]
-tables = false  # no line limit in tables
-code_blocks = false  # no line limit in code blocks
+tables = false      # no line limit in tables
+code_blocks = false # no line limit in code blocks
 
 [tool.pymarkdown.plugins.md060]
-enabled = false  # clashes with mdformat's table padding
+enabled = false # clashes with mdformat's table padding
