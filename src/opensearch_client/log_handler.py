@@ -27,7 +27,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from threading import Condition, Event, Lock, Thread, current_thread
-from typing import Any, cast
+from typing import Any
 
 from opensearch_client.client import OpensearchClient
 
@@ -293,9 +293,10 @@ class OpensearchLogHandler(logging.Handler):
             client (OpensearchClient): the client used to index documents.
             index (str): the base index name records are written to.
             level (int): the minimum level the handler accepts.
-            flush_threshold (int): flush as soon as this many records are
-                queued. The buffer can grow past this while a send is running
-                or failing, up to ``buffer_limit``.
+            flush_threshold (int): flush as soon as a new record brings the queue
+                to this many records. While a send is running, or after one
+                failed, the queue can grow past this, up to ``buffer_limit``,
+                without starting more sends.
             flush_interval (float): flush at least this often, in seconds.
             buffer_limit (int): the most records held in the buffer; beyond this
                 the oldest are dropped and counted in ``dropped``. Keep it at
@@ -310,16 +311,14 @@ class OpensearchLogHandler(logging.Handler):
         self.index = index
         self._index_ready = False
 
-        # Guards _buffer, _dropped, _backing_off and the send counters. Held only
-        # for quick updates, never while sending, so a slow send does not block
-        # logging.
+        # Guards _buffer, _dropped and the send counters. Held only for quick
+        # updates, never while sending, so a slow send does not block logging.
         self._lock = Lock()
 
         self._buffer: deque[dict[str, Any]] = deque()
         self.flush_threshold = flush_threshold
         self.buffer_limit = buffer_limit
         self._dropped = 0
-        self._backing_off = False
         # Counted by the flush thread, so that flush can wait for a send that
         # started after it was called, and therefore holds its records.
         self._sends_started = 0
@@ -330,13 +329,13 @@ class OpensearchLogHandler(logging.Handler):
 
         # The thread starts last so that attributes it uses exist before it runs.
         self.flush_interval = flush_interval
-        self._wake_flush_thread = Event()
-        self._stop_event = Event()
+        self._flush_thread_wakeup = Event()
+        self._flush_thread_stop = Event()
         self._flush_thread = Thread(
             target=self._run_flush_loop, name="opensearch_client-log-flush", daemon=True
         )
         # Filter out records emitted by the flushing thread
-        self.addFilter(lambda record: current_thread() is not self._flush_thread)
+        self.addFilter(lambda _record: current_thread() is not self._flush_thread)
         self.addFilter(context_filter or ECSLogContextFilter())
         self._flush_thread.start()
 
@@ -355,19 +354,26 @@ class OpensearchLogHandler(logging.Handler):
             record (logging.LogRecord): the record to ship.
         """
         try:
-            doc = cast(ECSLogFormatter, self.formatter).format_document(record)
+            formatter = self.formatter
+            if not isinstance(formatter, ECSLogFormatter):
+                raise TypeError(
+                    "OpensearchLogHandler needs an ECSLogFormatter, got "
+                    f"{type(formatter).__name__}"
+                )
+            doc = formatter.format_document(record)
 
             with self._lock:
                 # Check if handler is already closed.
-                if self._stop_event.is_set():
+                if self._flush_thread_stop.is_set():
                     self._dropped += 1
                     return
+                # Wake the flush thread only when this record fills the buffer.
+                was_below_threshold = len(self._buffer) < self.flush_threshold
                 self._buffer.append(doc)
                 self._drop_oldest_beyond_buffer_limit()
-                full = len(self._buffer) >= self.flush_threshold
-                wake = full and not self._backing_off
-            if wake:
-                self._wake_flush_thread.set()
+                reached_threshold = len(self._buffer) >= self.flush_threshold
+            if was_below_threshold and reached_threshold:
+                self._flush_thread_wakeup.set()
         except RecursionError:
             raise
         except Exception:  # noqa: BLE001
@@ -387,7 +393,7 @@ class OpensearchLogHandler(logging.Handler):
             # A send already running may have taken the buffer before this call,
             # so wait for the next one to start.
             awaited_send = self._sends_started + 1
-            self._wake_flush_thread.set()
+            self._flush_thread_wakeup.set()
             self._send_finished.wait_for(
                 lambda: self._sends_finished >= awaited_send, _FLUSH_WAIT_SECONDS
             )
@@ -398,8 +404,8 @@ class OpensearchLogHandler(logging.Handler):
         Waits at most 5 seconds for that final send. Records it cannot send are
         dropped.
         """
-        self._stop_event.set()
-        self._wake_flush_thread.set()
+        self._flush_thread_stop.set()
+        self._flush_thread_wakeup.set()
         self._flush_thread.join(_CLOSE_JOIN_SECONDS)
         super().close()
 
@@ -411,14 +417,17 @@ class OpensearchLogHandler(logging.Handler):
         the loop makes one last send and exits.
         """
         while True:
-            self._wake_flush_thread.wait(self.flush_interval)
-            self._wake_flush_thread.clear()
-            stopping = self._stop_event.is_set()
+            self._flush_thread_wakeup.wait(self.flush_interval)
+            # Under the lock, like flush's wakeup request, so that a request
+            # made before this send started is consumed by it, never left over.
             with self._lock:
+                self._flush_thread_wakeup.clear()
                 self._sends_started += 1
+            # Read after the clear: close sets the stop request, then the wakeup.
+            stopping = self._flush_thread_stop.is_set()
             try:
                 self._send_buffered()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # This handler ignores records logged on its own thread, so
                 # reporting here cannot feed back into the queue.
                 logger.exception("sending buffered log records failed")
@@ -454,8 +463,6 @@ class OpensearchLogHandler(logging.Handler):
                 self._dropped += len(documents)
             raise
         if result:
-            with self._lock:
-                self._backing_off = False
             return
 
         kept = []
@@ -479,7 +486,6 @@ class OpensearchLogHandler(logging.Handler):
             self._dropped += rejected
             self._buffer.extendleft(reversed(kept))
             self._drop_oldest_beyond_buffer_limit()
-            self._backing_off = bool(kept)
 
     def _drop_oldest_beyond_buffer_limit(self) -> None:
         """Drop the oldest queued records while more than ``buffer_limit`` wait.
