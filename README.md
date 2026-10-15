@@ -6,13 +6,13 @@ OpenSearch client library
 
 Install the package as you would any non-PyPi Python package. For example:
 
-```
+```sh
 python3 -m pip install -e .
 ```
 
 or
 
-```
+```sh
 pipx install git+https://github.com/canonical/opensearch_client.git
 ```
 
@@ -39,9 +39,9 @@ Runtime dependencies: `requests`, `PyYAML`.
 
 The client currently covers single-document and bulk indexing, search, SQL and
 PPL, counts, mappings, versions, index creation and lifecycle (refresh, delete,
-exists, list, rollover), aliases, index templates, reindex, update-by-query, and task polling, over
-a direct or dashboard-proxy transport with server-certificate verification. The
-following capabilities are planned but not yet implemented:
+exists, list, rollover), aliases, index templates, reindex, update-by-query, and
+task polling, over a direct or dashboard-proxy transport with server-certificate
+verification. The following capabilities are planned but not yet implemented:
 
 ### Mutual TLS
 

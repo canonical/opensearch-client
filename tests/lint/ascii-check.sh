@@ -16,7 +16,7 @@ else
 fi
 
 out=$(for filetype in "${FILETYPES[@]}"; do
-    LC_ALL=C grep -nHP "[\x80-\xFF]" $(git ls-files "*.${filetype}")
+    LC_ALL=C find . -name "*.$filetype" -not -path './.*' -exec grep -nHP "[\x80-\xFF]" {} \;
 done)
 if [ -n "$out" ]; then
     printf "Non-ascii characters detected in code:\n%s" "$out"

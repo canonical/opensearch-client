@@ -23,6 +23,10 @@ class BulkItem(NamedTuple):
     ``payload`` is stored (not recomputed) so each document is serialized exactly
     once; ``document`` is kept because a failure reports the original source, which
     cannot be recovered from the encoded bytes.
+
+    Attributes:
+        payload (bytes): the encoded action and source lines.
+        document (dict[str, Any]): the original document.
     """
 
     payload: bytes
@@ -30,7 +34,16 @@ class BulkItem(NamedTuple):
 
     @classmethod
     def build(cls, action: str, index: str, document: dict[str, Any]) -> "BulkItem":
-        """Encode one document's action + source NDJSON lines, once."""
+        """Encode one document's action + source NDJSON lines, once.
+
+        Args:
+            action (str): the bulk action, e.g. ``index``.
+            index (str): the index the document is written to.
+            document (dict[str, Any]): the document source.
+
+        Returns:
+            The item, with the document encoded.
+        """
         meta = json.dumps({action: {"_index": index}})
         return cls(f"{meta}\n{json.dumps(document)}\n".encode(), document)
 
@@ -91,9 +104,10 @@ def _query_string(params: dict[str, Any]) -> str:
     """Render params as a URL query string (bools lowercased)."""
     parts = []
     for key, value in params.items():
+        rendered_value = value
         if isinstance(value, bool):
-            value = "true" if value else "false"
-        parts.append(f"{key}={value}")
+            rendered_value = "true" if value else "false"
+        parts.append(f"{key}={rendered_value}")
     return "?" + "&".join(parts) if parts else ""
 
 
@@ -141,12 +155,22 @@ class OpensearchClient:
             body (dict[str, Any] | None): optional request body, encoded as JSON.
             timeout (int): request timeout in seconds; override for operations that
                 can run longer than a search.
+
+        Returns:
+            The decoded response body, or a failure.
         """
         encoded = None if body is None else json.dumps(body).encode()
         return self._transport.request(method, path, encoded, timeout=timeout)
 
     def get(self, path: str) -> OpensearchResult[Any]:
-        """GET an arbitrary OpenSearch path, e.g. ``_cat/plugins?format=json``."""
+        """GET an arbitrary OpenSearch path, e.g. ``_cat/plugins?format=json``.
+
+        Args:
+            path (str): the OpenSearch path, without a leading slash.
+
+        Returns:
+            The decoded response body, or a failure.
+        """
         return self.request("GET", path)
 
     # -- reads ------------------------------------------------------------
@@ -154,13 +178,31 @@ class OpensearchClient:
     def search_raw(
         self, query: dict[str, Any], index: str | None = None
     ) -> OpensearchResult[dict[str, Any]]:
-        """Run a search and return the full response (hits, aggregations, ...)."""
+        """Run a search and return the full response (hits, aggregations, ...).
+
+        Args:
+            query (dict[str, Any]): the search body.
+            index (str | None): the index or pattern to search; defaults to
+                ``default_index``.
+
+        Returns:
+            The full search response, or a failure.
+        """
         return self.request("POST", f"{index or self.default_index}/_search", query)
 
     def search(
         self, query: dict[str, Any], index: str | None = None
     ) -> OpensearchResult:
-        """Run a search against the index, returning each hit's ``_source``."""
+        """Run a search against the index, returning each hit's ``_source``.
+
+        Args:
+            query (dict[str, Any]): the search body.
+            index (str | None): the index or pattern to search; defaults to
+                ``default_index``.
+
+        Returns:
+            The ``_source`` of each hit, or a failure.
+        """
         res = self.search_raw(query, index)
         if not res:
             return res
@@ -170,7 +212,16 @@ class OpensearchClient:
     def count(
         self, query: dict[str, Any], index: str | None = None
     ) -> OpensearchResult[int]:
-        """Count documents matching a DSL query via the ``_count`` API."""
+        """Count documents matching a DSL query via the ``_count`` API.
+
+        Args:
+            query (dict[str, Any]): the query DSL.
+            index (str | None): the index or pattern to count in; defaults to
+                ``default_index``.
+
+        Returns:
+            The number of matching documents, or a failure.
+        """
         res = self.request(
             "POST", f"{index or self.default_index}/_count", {"query": query}
         )
@@ -184,6 +235,13 @@ class OpensearchClient:
         """Run a SQL query and return the raw jdbc response (schema + datarows).
 
         ``filter_dsl`` is an optional query DSL the SQL engine ANDs with the query.
+
+        Args:
+            sql_query (str): the SQL query.
+            filter_dsl (dict[str, Any] | None): a query DSL to AND with the query.
+
+        Returns:
+            The raw jdbc response, or a failure.
         """
         body: dict[str, Any] = {"query": sql_query}
         if filter_dsl is not None:
@@ -193,14 +251,29 @@ class OpensearchClient:
     def sql(
         self, sql_query: str, filter_dsl: dict[str, Any] | None = None
     ) -> OpensearchResult:
-        """Run a SQL query against the index, returning the rows as dicts."""
+        """Run a SQL query against the index, returning the rows as dicts.
+
+        Args:
+            sql_query (str): the SQL query.
+            filter_dsl (dict[str, Any] | None): a query DSL to AND with the query.
+
+        Returns:
+            One dict per row, or a failure.
+        """
         res = self.sql_raw(sql_query, filter_dsl)
         if not res:
             return res
         return Success(rows_from_sql_response(res.data))
 
     def ppl(self, ppl_query: str) -> OpensearchResult[list[dict[str, Any]]]:
-        """Run a PPL query against the index, returning the rows as dicts."""
+        """Run a PPL query against the index, returning the rows as dicts.
+
+        Args:
+            ppl_query (str): the PPL query.
+
+        Returns:
+            One dict per row, or a failure.
+        """
         res = self.request("POST", "_plugins/_ppl", {"query": ppl_query})
         if not res:
             return res
@@ -211,14 +284,27 @@ class OpensearchClient:
     ) -> OpensearchResult[dict[str, Any]]:
         """Return the SQL execution plan (the pushed-down query DSL), unexecuted.
 
-        query_type must be one of: sql, ppl.
+        Args:
+            query (str): the SQL or PPL query to explain.
+            query_type (str): the query language: ``sql`` or ``ppl``.
+
+        Returns:
+            The execution plan, or a failure.
         """
         return self.request(
             "POST", f"_plugins/_{query_type}/_explain", {"query": query}
         )
 
     def get_mapping(self, index: str | None = None) -> OpensearchResult[dict[str, Any]]:
-        """Return the full mapping for the index (or pattern)."""
+        """Return the full mapping for the index (or pattern).
+
+        Args:
+            index (str | None): the index or pattern to inspect; defaults to
+                ``default_index``.
+
+        Returns:
+            The mapping, or a failure.
+        """
         return self.request("GET", f"{index or self.default_index}/_mapping")
 
     def field_mapping(
@@ -229,20 +315,36 @@ class OpensearchClient:
         An empty ``mappings`` for an index means the field is not mapped there, and
         so cannot be resolved by SQL or a term filter even when it appears in a
         document's ``_source``.
+
+        Args:
+            field (str): the field name, or comma-separated names; wildcards allowed.
+            index (str | None): the index or pattern to inspect; defaults to
+                ``default_index``.
+
+        Returns:
+            The field mappings, or a failure.
         """
         return self.request(
             "GET", f"{index or self.default_index}/_mapping/field/{field}"
         )
 
     def opensearch_version(self) -> OpensearchResult[list[str]]:
-        """Return the distinct OpenSearch versions running across the cluster's nodes."""
+        """Return the distinct OpenSearch versions running across the nodes.
+
+        Returns:
+            The sorted versions, or a failure.
+        """
         res = self.get("_cat/nodes?h=version&format=json")
         if not res:
             return res
         return Success(sorted({node.get("version") for node in res.data}))
 
     def plugin_versions(self) -> OpensearchResult[dict[str, str]]:
-        """Return the installed plugins mapped to their versions."""
+        """Return the installed plugins mapped to their versions.
+
+        Returns:
+            The plugin versions keyed by plugin name, or a failure.
+        """
         res = self.get("_cat/plugins?h=component,version&format=json")
         if not res:
             return res
@@ -303,11 +405,19 @@ class OpensearchClient:
         document, whether from a failed batch or a per-item error, is retried up to
         ``max_retries`` times (``max_retries=0`` disables retries).
 
-        Returns a summary: ``indexed`` and ``failed`` document counts, the number
-        of ``batches`` sent, and a ``failures`` list (each with the offending
-        ``document`` and its error). The result is a ``Success`` only if every
-        document was indexed; if any failed, it is a ``Failure`` whose ``data``
-        still carries the same summary for inspection.
+        Args:
+            documents (Iterable[dict[str, Any]]): the documents to index.
+            index (str | None): the index to write to; defaults to ``default_index``.
+            action (str): the bulk action, e.g. ``index`` or ``create``.
+            max_bytes (int): the largest request body, in bytes.
+            max_retries (int): how many times to resend transiently failed documents.
+
+        Returns:
+            A summary: ``indexed`` and ``failed`` document counts, the number of
+            ``batches`` sent, and a ``failures`` list (each with the offending
+            ``document`` and its error). The result is a ``Success`` only if every
+            document was indexed; if any failed, it is a ``Failure`` whose
+            ``data`` still carries the same summary for inspection.
         """
         idx = index or self.default_index
         pending = [BulkItem.build(action, idx, doc) for doc in documents]
@@ -349,6 +459,15 @@ class OpensearchClient:
         Without ``doc_id`` OpenSearch assigns one (``POST <index>/_doc``); with it
         the document is created or replaced at that id (``PUT <index>/_doc/<id>``).
         ``refresh=True`` makes the document immediately searchable.
+
+        Args:
+            document (dict[str, Any]): the document source.
+            index (str | None): the index to write to; defaults to ``default_index``.
+            doc_id (str | None): the document id, or None to let OpenSearch assign one.
+            refresh (bool): whether to make the document immediately searchable.
+
+        Returns:
+            The index response, or a failure.
         """
         idx = index or self.default_index
         if doc_id is not None:
@@ -362,7 +481,15 @@ class OpensearchClient:
     def create_index(
         self, body: dict[str, Any], index: str | None = None
     ) -> OpensearchResult[dict[str, Any]]:
-        """Create an index with the given settings/mappings body (``PUT <index>``)."""
+        """Create an index with the given settings/mappings body (``PUT <index>``).
+
+        Args:
+            body (dict[str, Any]): the settings and mappings.
+            index (str | None): the index to create; defaults to ``default_index``.
+
+        Returns:
+            The create acknowledgement, or a failure.
+        """
         return self.request("PUT", index or self.default_index, body)
 
     def put_mapping(
@@ -374,9 +501,10 @@ class OpensearchClient:
         conflicting change comes back as a failure.
 
         Args:
-            mapping: the mappings body, e.g.
+            mapping (dict[str, Any]): the mappings body, e.g.
                 ``{"properties": {"source.ip": {"type": "ip"}}}``.
-            index: the index (or pattern) to update; defaults to the configured index.
+            index (str | None): the index (or pattern) to update; defaults to the
+                configured index.
 
         Returns:
             The put-mapping acknowledgement.
@@ -387,7 +515,7 @@ class OpensearchClient:
         """Get ingest pipelines: all of them, or one by name.
 
         Args:
-            name: the pipeline to fetch; None fetches every pipeline
+            name (str | None): the pipeline to fetch; None fetches every pipeline
                 (``GET _ingest/pipeline`` vs ``GET _ingest/pipeline/<name>``).
 
         Returns:
@@ -402,8 +530,8 @@ class OpensearchClient:
         """Create or replace a named ingest pipeline (``PUT _ingest/pipeline/<name>``).
 
         Args:
-            name: the pipeline name.
-            body: the pipeline definition, e.g.
+            name (str): the pipeline name.
+            body (dict[str, Any]): the pipeline definition, e.g.
                 ``{"description": "...", "processors": [...]}``.
 
         Returns:
@@ -471,8 +599,8 @@ class OpensearchClient:
         """Refresh an index so its recent writes become searchable.
 
         Args:
-            index: the index or pattern to refresh; defaults to the client's
-                configured index.
+            index (str | None): the index or pattern to refresh; defaults to the
+                client's configured index.
 
         Returns:
             The ``_refresh`` response (per-shard success counts).
@@ -486,7 +614,7 @@ class OpensearchClient:
         client's configured index by accident.
 
         Args:
-            index: the index to delete.
+            index (str): the index to delete.
 
         Returns:
             The delete acknowledgement.
@@ -497,7 +625,7 @@ class OpensearchClient:
         """Report whether an index exists.
 
         Args:
-            index: the index to test.
+            index (str): the index to test.
 
         Returns:
             True if the index exists, False if it does not (a 404). A non-404
@@ -514,7 +642,7 @@ class OpensearchClient:
         """List the names of indices matching a pattern, sorted.
 
         Args:
-            pattern: an index-name pattern (wildcards allowed); defaults to all.
+            pattern (str): an index-name pattern (wildcards allowed); defaults to all.
 
         Returns:
             The matching index names, sorted.
@@ -525,7 +653,7 @@ class OpensearchClient:
         return Success(sorted(row["index"] for row in res.data))
 
     def get_alias(self, name: str) -> OpensearchResult[dict[str, Any]]:
-        """Get the indices holding an alias (``GET _alias/<name>``, wildcards allowed)."""
+        """Get the indices holding an alias (``GET _alias/<name>``, with wildcards)."""
         return self.request("GET", f"_alias/{name}")
 
     def rollover(
@@ -536,7 +664,7 @@ class OpensearchClient:
         dry_run: bool = False,
         timeout: int = 120,
     ) -> OpensearchResult[dict[str, Any]]:
-        """Roll the write alias ``alias`` over to a new index (``POST <alias>/_rollover``).
+        """Roll the write alias over to a new index (``POST <alias>/_rollover``).
 
         ``settings`` apply to the new index only and override its template.
         ``dry_run=True`` reports the new index's name without creating it.
@@ -562,6 +690,18 @@ class OpensearchClient:
         ``wait_for_completion=False`` the call returns a task id to poll (see
         :meth:`get_task`). For advanced options (a source query, a destination
         pipeline, ...) build the request with :meth:`request` directly.
+
+        Args:
+            source (str): the index to copy from.
+            dest (str): the index to copy into.
+            script (dict[str, Any] | None): a script that transforms each document as it
+                is copied.
+            wait_for_completion (bool): whether to wait, rather than return a task id.
+            refresh (bool): whether to refresh the destination afterwards.
+            timeout (int): request timeout in seconds.
+
+        Returns:
+            The reindex response (or task id), or a failure.
         """
         body: dict[str, Any] = {"source": {"index": source}, "dest": {"index": dest}}
         if script is not None:
@@ -588,6 +728,19 @@ class OpensearchClient:
         ``wait_for_completion=False`` the call returns a task id to poll (see
         :meth:`get_task`). ``conflicts="proceed"`` continues past version conflicts
         instead of aborting.
+
+        Args:
+            query (dict[str, Any]): the query DSL selecting the documents.
+            index (str | None): the index to update; defaults to ``default_index``.
+            script (dict[str, Any] | None): a script that transforms each matched
+                document.
+            conflicts (str | None): ``proceed`` to continue past version conflicts.
+            wait_for_completion (bool): whether to wait, rather than return a task id.
+            refresh (bool): whether to refresh the index afterwards.
+            timeout (int): request timeout in seconds.
+
+        Returns:
+            The update response (or task id), or a failure.
         """
         body: dict[str, Any] = {"query": query}
         if script is not None:
@@ -601,5 +754,12 @@ class OpensearchClient:
         return self.request("POST", path, body, timeout)
 
     def get_task(self, task_id: str) -> OpensearchResult[dict[str, Any]]:
-        """Return a task document by id (``GET _tasks/<task_id>``)."""
+        """Return a task document by id (``GET _tasks/<task_id>``).
+
+        Args:
+            task_id (str): the task to fetch.
+
+        Returns:
+            The task document, or a failure.
+        """
         return self.request("GET", f"_tasks/{task_id}")

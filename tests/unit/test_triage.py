@@ -175,6 +175,8 @@ def test_status_summarizes_layers_and_missing_field() -> None:
 
 def test_run_wraps_a_failed_call_as_a_result() -> None:
     class Failing:
+        """A transport that answers every request with a failure."""
+
         def request(
             self, method, path, body=None, content_type="application/json", timeout=30
         ):

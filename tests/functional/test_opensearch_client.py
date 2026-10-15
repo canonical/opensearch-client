@@ -150,7 +150,7 @@ def test_triage_workflow_eliminates_a_layer() -> None:
         assert undo["restored"] == 3
         restored = triage.status(_client, dest)
         assert restored["untriaged"] == 5
-        assert restored["eliminated_by_layer"] == {}
+        assert not restored["eliminated_by_layer"]
 
         rows = _client.search({"size": 10, "query": {"match_all": {}}}, index=dest)
         assert rows

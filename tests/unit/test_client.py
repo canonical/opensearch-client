@@ -7,8 +7,8 @@ import json
 from typing import Any
 
 from opensearch_client.client import (
-    BulkItem,
     DEFAULT_INDEX,
+    BulkItem,
     OpensearchClient,
     _pack_batches,
 )
@@ -35,7 +35,10 @@ class FakeTransport:
 
 
 class _SeqTransport:
-    """A transport returning queued results in order (the last repeats); counts calls."""
+    """A transport returning queued results in order (the last repeats).
+
+    Counts the calls.
+    """
 
     def __init__(self, *results: OpensearchResult[Any]) -> None:
         self._results = results

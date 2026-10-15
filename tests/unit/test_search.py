@@ -23,6 +23,6 @@ def test_unmapped_fields_returns_the_fields_absent_from_the_mapping() -> None:
     mapped = OpensearchClient(
         _Transport(Success({"idx": {"mappings": {"f": {"full_name": "f"}}}}))
     )
-    assert search._unmapped_fields(mapped, ["f"], index=None) == []
+    assert not search._unmapped_fields(mapped, ["f"], index=None)
     unmapped = OpensearchClient(_Transport(Success({"idx": {"mappings": {}}})))
     assert search._unmapped_fields(unmapped, ["f"], index=None) == ["f"]
