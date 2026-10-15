@@ -81,12 +81,19 @@ def _index() -> str:
     return DEFAULT_INDEX
 
 
-def client_from_env(insecure: bool = False) -> OpensearchClient | None:
+def client_from_env(
+    insecure: bool = False, direct_only: bool = False
+) -> OpensearchClient | None:
     """Build a client from the ``OPENSEARCH_*`` environment variables.
 
     Args:
         insecure (bool): if True, skip TLS certificate verification, the same as
             setting ``OPENSEARCH_INSECURE``; either turning it on is enough.
+        direct_only (bool): if True, use only a direct connection to the endpoint in
+            ``OPENSEARCH_URL`` or ``OPENSEARCH_HOST``, never probing or falling back
+            to a dashboard proxy, and ignore the ``OPENSEARCH_DASHBOARD_*``
+            variables. An HTTP error on the first request, such as a 404, is then
+            returned as it is rather than read as "no direct endpoint".
 
     Returns:
         OpensearchClient | None: the configured client, or None (after printing an
@@ -111,6 +118,16 @@ def client_from_env(insecure: bool = False) -> OpensearchClient | None:
     unknown_url = _endpoint(
         "OPENSEARCH_URL", "OPENSEARCH_HOST", "OPENSEARCH_PORT", _DEFAULT_DIRECT_PORT
     )
+    if direct_only:
+        if not unknown_url:
+            print(
+                "error: this command needs a direct connection to the cluster: "
+                "set OPENSEARCH_URL or OPENSEARCH_HOST",
+                file=sys.stderr,
+            )
+            return None
+        return OpensearchClient(DirectTransport(unknown_url, auth, verify))
+
     dashboard_url = _endpoint(
         "OPENSEARCH_DASHBOARD_URL",
         "OPENSEARCH_DASHBOARD_HOST",
