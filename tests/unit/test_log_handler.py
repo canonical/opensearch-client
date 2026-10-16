@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from helpers import RecordingTransport
 
+from opensearch_client.client import BULK_MAX_BYTES, OpensearchClient
 from opensearch_client.log_handler import (
     ECSLogContextFilter,
     ECSLogFormatter,
@@ -33,8 +35,8 @@ _WAIT_SECONDS = 5
 _CLUSTER_DOWN = {"status": None, "reason": "connection refused"}
 
 
-class FakeClient:
-    """Stands in for OpensearchClient: answers the two calls the handler makes.
+class FakeClient(OpensearchClient):
+    """An OpensearchClient whose two calls the handler makes are answered here.
 
     Like a cluster that does not create indexes on its own, it rejects every
     document while the index does not exist.
@@ -68,6 +70,7 @@ class FakeClient:
                 libraries under a real client do.
             send_delay (float): how long every bulk call takes, in seconds.
         """
+        super().__init__(RecordingTransport())
         self.index_present = index_present
         self.failure = failure
         self.bulk_error = bulk_error
@@ -78,7 +81,10 @@ class FakeClient:
         self.send_started = threading.Event()
         self.bulk_received = threading.Event()
 
-    def ensure_index(self, index: str | None = None) -> OpensearchResult[bool]:
+    def ensure_index(
+        self, index: str | None = None, body: dict[str, Any] | None = None
+    ) -> OpensearchResult[bool]:
+        del body  # the handler creates the index with default settings
         self.calls.append(("ensure_index", index))
         created = not self.index_present
         self.index_present = True
@@ -89,9 +95,12 @@ class FakeClient:
         documents: Iterable[dict[str, Any]],
         index: str | None = None,
         *,
+        action: str = "index",
+        max_bytes: int = BULK_MAX_BYTES,
         max_retries: int = 3,
     ) -> OpensearchResult[dict[str, Any]]:
-        del max_retries  # retrying is the real client's job; see test_client.py
+        # Batching and retrying are the real client's job; see test_client.py.
+        del action, max_bytes, max_retries
         self.calls.append(("bulk", index))
         self.send_started.set()
         time.sleep(self.send_delay)
@@ -206,13 +215,14 @@ def test_context_reaches_every_document_and_extra_values_do_not_leak() -> None:
 
 
 def test_shipped_records_carry_the_context_and_a_bad_record_is_reported() -> None:
-    """With no setup, documents name the service and go to the handler's index.
+    """With the ECS formatter and filter set, documents name the service.
 
-    A record that cannot be formatted goes to handleError, and is neither shipped
-    nor counted as dropped.
+    A record that cannot be formatted goes to handleError, and is not shipped.
     """
     client = FakeClient()
     handler = ErrorRecordingHandler(client, "logs", flush_interval=3600.0)
+    handler.setFormatter(ECSLogFormatter())
+    handler.addFilter(ECSLogContextFilter())
     bad = logging.LogRecord(
         "test", logging.INFO, __file__, 1, "%d", ("not a number",), None
     )
@@ -224,7 +234,6 @@ def test_shipped_records_carry_the_context_and_a_bad_record_is_reported() -> Non
         handler.flush()
 
         assert handler.errored_records == [bad]
-        assert handler.dropped == 0
         [document] = client.documents
         assert document["service"]["name"]
         assert ("bulk", "logs") in client.calls
@@ -245,7 +254,6 @@ def test_a_slow_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:
 
         assert emit_seconds < 0.15, "emit waited for the 0.3 s send"
         assert _messages(client) == ["a", "c", "d"]
-        assert handler.dropped == 1
 
 
 def test_queued_records_are_sent_without_an_explicit_flush() -> None:
@@ -330,7 +338,6 @@ def test_records_reach_an_index_that_is_missing_or_deleted() -> None:
         handler.flush()  # creates the index again and resends
 
         assert _messages(client) == ["one", "two"]
-        assert handler.dropped == 0
 
 
 def test_records_survive_an_outage_without_hammering_the_cluster() -> None:
@@ -338,15 +345,13 @@ def test_records_survive_an_outage_without_hammering_the_cluster() -> None:
 
     Records kept after a failed send leave the buffer full, and new records must
     not each trigger a resend to the cluster that just failed: the next attempt
-    waits for the interval or a flush. Records still unsent at close are counted
-    as dropped.
+    waits for the interval or a flush.
     """
     client = FakeClient(failure=_CLUSTER_DOWN)
     with _running(_handler(client, flush_threshold=2)) as handler:
         handler.emit(_record("a"))
         handler.emit(_record("b"))  # reaches flush_threshold
         handler.flush()  # the cluster is down: "a" and "b" are kept
-        assert handler.dropped == 0
 
         client.send_started.clear()
         for name in ("c", "d", "e"):
@@ -356,11 +361,6 @@ def test_records_survive_an_outage_without_hammering_the_cluster() -> None:
         client.recover()
         handler.flush()
         assert _messages(client) == ["a", "b", "c", "d", "e"]
-
-        client.failure = _CLUSTER_DOWN
-        handler.emit(_record("f"))
-        handler.close()
-        assert handler.dropped == 1
 
 
 def test_records_kept_after_a_failed_send_respect_buffer_limit_oldest_first() -> None:
@@ -373,12 +373,10 @@ def test_records_kept_after_a_failed_send_respect_buffer_limit_oldest_first() ->
         handler.emit(_record("d"))  # queued while the send is failing
         handler.emit(_record("e"))
         handler.flush()
-        assert handler.dropped == 2
 
         client.recover()
         handler.flush()
         assert _messages(client) == ["c", "d", "e"]
-        assert handler.dropped == 2
 
 
 def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> None:
@@ -402,31 +400,27 @@ def test_temporary_failures_are_kept_and_rejected_documents_are_dropped() -> Non
             client.recover()
             handler.flush()
 
-            expected = (1, 0) if is_kept else (0, 1)  # (delivered, dropped)
-            assert (len(client.documents), handler.dropped) == expected, (
-                f"{status} {error_type}"
-            )
+        delivered = 1 if is_kept else 0
+        assert len(client.documents) == delivered, f"{status} {error_type}"
 
 
 def test_a_send_that_raises_is_contained() -> None:
-    """Records are counted as dropped; the thread lives on; close does not raise."""
+    """Its records are lost, but the thread lives on and close does not raise."""
     client = FakeClient(bulk_error=RuntimeError("boom"))
-    handler = _handler(client)
 
-    with _running(handler):
+    with _running(_handler(client)) as handler:
         handler.emit(_record("one"))
         handler.flush()
-        assert handler.dropped == 1
 
+        client.bulk_error = None
         handler.emit(_record("two"))
         handler.flush()
-        assert handler.dropped == 2  # the flush thread survived the first failure
+        assert _messages(client) == ["two"]  # the thread survived the failure
 
+        client.bulk_error = RuntimeError("boom")
         handler.emit(_record("three"))
     # Leaving the block closed the handler. Its final send raised, and that must
     # not have escaped.
-
-    assert handler.dropped == 3
 
 
 def test_emit_lets_recursion_error_through() -> None:
@@ -448,8 +442,8 @@ def test_emit_lets_recursion_error_through() -> None:
 def test_close_sends_the_remaining_records_and_drops_later_ones() -> None:
     """Closing sends what is queued and stops the flush thread.
 
-    A record emitted later is counted as dropped, and a later flush returns at
-    once, as logging.shutdown needs.
+    A record emitted later is not queued, and a later flush returns at once, as
+    logging.shutdown needs.
     """
     client = FakeClient()
     handler = _handler(client)
@@ -464,5 +458,4 @@ def test_close_sends_the_remaining_records_and_drops_later_ones() -> None:
     started = time.monotonic()
     handler.flush()  # logging.shutdown flushes handlers that were already closed
     assert time.monotonic() - started < _WAIT_SECONDS
-    assert handler.dropped == 1
     assert _messages(client) == ["last"]

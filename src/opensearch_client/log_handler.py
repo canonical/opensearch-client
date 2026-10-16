@@ -12,10 +12,15 @@ what a log handler needs on top of it:
 - a bounded in-memory buffer, so logging never blocks on the network;
 - a background thread that flushes the buffer by size or by interval;
 - a final flush on shutdown, so the last records are not lost;
-- an ``ECSLogFormatter`` that converts a ``LogRecord`` into an ECS-style document,
-  and an ``ECSLogContextFilter`` that adds the host and service context to it;
 - a guarantee that a shipping failure never raises into the application and
   never feeds back into the handler itself.
+
+What is indexed for a record is up to the handler's formatter. For ECS
+documents, set an ``ECSLogFormatter`` on the handler, and add an
+``ECSLogContextFilter`` for the host and service the logs come from.
+
+The threads, the lock and the events are described in
+``docs/log-handler-concurrency.md``.
 """
 
 import json
@@ -25,12 +30,11 @@ import socket
 import sys
 import uuid
 from collections import deque
-from collections.abc import Iterable
 from datetime import datetime, timezone
 from threading import Condition, Event, Lock, Thread, current_thread
-from typing import Any, Protocol
+from typing import Any
 
-from opensearch_client.result import OpensearchResult
+from opensearch_client.client import OpensearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,12 @@ _ECS_VERSION = "9.0"
 _STANDARD_RECORD_ATTRIBUTES = frozenset(
     vars(logging.LogRecord("", 0, "", 0, "", (), None))
 ) | {"message", "asctime", "ecs_context"}
+
+
+def _format_timestamp(created: float) -> str:
+    """Format a record's creation time as UTC to the millisecond, e.g. ``...Z``."""
+    timestamp = datetime.fromtimestamp(created, timezone.utc)
+    return timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
@@ -142,11 +152,10 @@ class ECSLogContextFilter(logging.Filter):
 class ECSLogFormatter(logging.Formatter):
     """Format log records as ECS documents.
 
-    ``format_document`` returns a document as a dict, which is what
-    ``OpensearchLogHandler`` queues. ``format`` returns the same document as JSON
-    text, so the formatter also works with any other handler. The document gets
-    its host and service fields from the ``ecs_context`` that an
-    :class:`ECSLogContextFilter` sets on the record, so add one to the handler.
+    ``format`` returns a record's document as JSON text, and ``format_document``
+    returns it as a dict. The document gets its host and service fields from the
+    ``ecs_context`` that an :class:`ECSLogContextFilter` sets on the record, so
+    add one wherever this formatter is used.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -190,11 +199,8 @@ class ECSLogFormatter(logging.Formatter):
         Returns:
             dict[str, Any]: the document to index.
         """
-        timestamp = datetime.fromtimestamp(record.created, timezone.utc)
         fields: dict[str, Any] = {
-            "@timestamp": (
-                timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-            ),
+            "@timestamp": _format_timestamp(record.created),
             "message": record.getMessage(),
             "log": {
                 "level": record.levelname.lower(),
@@ -262,30 +268,13 @@ class ECSLogFormatter(logging.Formatter):
         """
         cleaned = {}
         for key, value in mapping.items():
+            cleaned_value = value
             if isinstance(value, dict):
-                value = self._strip_null_fields(value)
-            if value is None or value == {}:
+                cleaned_value = self._strip_null_fields(value)
+            if cleaned_value is None or cleaned_value == {}:
                 continue
-            cleaned[key] = value
+            cleaned[key] = cleaned_value
         return cleaned
-
-
-class LogShippingClient(Protocol):
-    """What the handler needs from a client; an ``OpensearchClient`` has it."""
-
-    def ensure_index(self, index: str | None = None) -> OpensearchResult[bool]:
-        """Create the index unless it exists; see ``OpensearchClient``."""
-        ...
-
-    def bulk(
-        self,
-        documents: Iterable[dict[str, Any]],
-        index: str | None = None,
-        *,
-        max_retries: int = 3,
-    ) -> OpensearchResult[dict[str, Any]]:
-        """Index the documents; see ``OpensearchClient``."""
-        ...
 
 
 class OpensearchLogHandler(logging.Handler):
@@ -297,20 +286,18 @@ class OpensearchLogHandler(logging.Handler):
 
     def __init__(
         self,
-        client: LogShippingClient,
+        client: OpensearchClient,
         index: str,
         *,
         level: int = logging.NOTSET,
         flush_threshold: int = 1000,
         flush_interval: float = 5.0,
         buffer_limit: int = 10000,
-        context_filter: ECSLogContextFilter | None = None,
     ) -> None:
         """Create the handler and start its background flush thread.
 
         Args:
-            client (LogShippingClient): the client used to index documents,
-                usually an ``OpensearchClient``.
+            client (OpensearchClient): the client used to index documents.
             index (str): the base index name records are written to.
             level (int): the minimum level the handler accepts.
             flush_threshold (int): flush as soon as a new record brings the queue
@@ -319,11 +306,8 @@ class OpensearchLogHandler(logging.Handler):
                 without starting more sends.
             flush_interval (float): flush at least this often, in seconds.
             buffer_limit (int): the most records held in the buffer; beyond this
-                the oldest are dropped and counted in ``dropped``. Keep it at
+                the oldest are discarded, and a warning says how many. Keep it at
                 or above ``flush_threshold``.
-            context_filter (ECSLogContextFilter | None): adds the service name and
-                extra fields to each record. Defaults to a filter with no extra
-                fields, and a service name taken from the running program.
         """
         super().__init__(level)
 
@@ -331,21 +315,20 @@ class OpensearchLogHandler(logging.Handler):
         self.index = index
         self._index_ready = False
 
-        # Guards _buffer, _dropped and the send counters. Held only for quick
-        # updates, never while sending, so a slow send does not block logging.
+        # The one lock: it guards the buffer, _overflowed and the send counters,
+        # and _send_finished is built on it. Held only for quick updates, never
+        # while sending, so a slow send does not block logging.
         self._lock = Lock()
 
-        self._buffer: deque[dict[str, Any]] = deque()
         self.flush_threshold = flush_threshold
         self.buffer_limit = buffer_limit
-        self._dropped = 0
-        # Counted by the flush thread, so that flush can wait for a send that
-        # started after it was called, and therefore holds its records.
+        # Appending to a full deque discards its oldest record.
+        self._buffer: deque[dict[str, Any]] = deque(maxlen=buffer_limit)
+        self._overflowed = 0
+        # See "Waiting for a flush" in docs/log-handler-concurrency.md.
         self._sends_started = 0
         self._sends_finished = 0
         self._send_finished = Condition(self._lock)
-
-        self.setFormatter(ECSLogFormatter())
 
         # The thread starts last so that attributes it uses exist before it runs.
         self.flush_interval = flush_interval
@@ -355,42 +338,39 @@ class OpensearchLogHandler(logging.Handler):
             target=self._run_flush_loop, name="opensearch_client-log-flush", daemon=True
         )
         # Filter out records emitted by the flushing thread
-        self.addFilter(lambda _record: current_thread() is not self._flush_thread)
-        self.addFilter(context_filter or ECSLogContextFilter())
+        self.addFilter(lambda _: current_thread() is not self._flush_thread)
         self._flush_thread.start()
-
-    @property
-    def dropped(self) -> int:
-        """The number of records discarded so far (queue overflow or send failure)."""
-        return self._dropped
 
     def emit(self, record: logging.LogRecord) -> None:
         """Queue one record for the flush thread; never block and never raise.
 
-        Once ``close`` has been called, the record is counted in ``dropped``
-        instead of queued.
+        The record is indexed as the formatter's output parsed as JSON, if that is
+        a JSON object, and otherwise as ``@timestamp`` and ``message``, the
+        formatted text. Once ``close`` has been called, the record is not queued.
 
         Args:
             record (logging.LogRecord): the record to ship.
         """
         try:
-            formatter = self.formatter
-            if not isinstance(formatter, ECSLogFormatter):
-                raise TypeError(
-                    "OpensearchLogHandler needs an ECSLogFormatter, got "
-                    f"{type(formatter).__name__}"
-                )
-            doc = formatter.format_document(record)
+            text = self.format(record)
+            try:
+                document = json.loads(text)
+            except json.JSONDecodeError:
+                document = None
+            if not isinstance(document, dict):
+                document = {
+                    "@timestamp": _format_timestamp(record.created),
+                    "message": text,
+                }
 
             with self._lock:
-                # Check if handler is already closed.
                 if self._flush_thread_stop.is_set():
-                    self._dropped += 1
                     return
+                if len(self._buffer) == self.buffer_limit:
+                    self._overflowed += 1
                 # Wake the flush thread only when this record fills the buffer.
                 was_below_threshold = len(self._buffer) < self.flush_threshold
-                self._buffer.append(doc)
-                self._drop_oldest_beyond_buffer_limit()
+                self._buffer.append(document)
                 reached_threshold = len(self._buffer) >= self.flush_threshold
             if was_below_threshold and reached_threshold:
                 self._flush_thread_wakeup.set()
@@ -409,9 +389,8 @@ class OpensearchLogHandler(logging.Handler):
         """
         if not self._flush_thread.is_alive():
             return
-        with self._send_finished:
-            # A send already running may have taken the buffer before this call,
-            # so wait for the next one to start.
+        with self._lock:
+            # See "Waiting for a flush" in docs/log-handler-concurrency.md.
             awaited_send = self._sends_started + 1
             self._flush_thread_wakeup.set()
             self._send_finished.wait_for(
@@ -422,7 +401,7 @@ class OpensearchLogHandler(logging.Handler):
         """Stop the flush thread after its final send, then close the handler.
 
         Waits at most 5 seconds for that final send. Records it cannot send are
-        dropped.
+        discarded, and a warning says how many.
         """
         self._flush_thread_stop.set()
         self._flush_thread_wakeup.set()
@@ -435,11 +414,15 @@ class OpensearchLogHandler(logging.Handler):
         Sends every ``flush_interval`` seconds, when woken by a full buffer, and
         when ``flush`` asks. A failed send never ends the loop. After ``close``
         the loop makes one last send and exits.
+
+        Records lost along the way are reported here, through ``logger``: this
+        handler ignores its own thread's records, so the warnings cannot feed
+        back into it.
         """
-        while True:
+        stopping = False
+        while not stopping:
             self._flush_thread_wakeup.wait(self.flush_interval)
-            # Under the lock, like flush's wakeup request, so that a request
-            # made before this send started is consumed by it, never left over.
+            # See "Starting a send" in docs/log-handler-concurrency.md.
             with self._lock:
                 self._flush_thread_wakeup.clear()
                 self._sends_started += 1
@@ -448,40 +431,42 @@ class OpensearchLogHandler(logging.Handler):
             try:
                 self._send_buffered()
             except Exception:
-                # This handler ignores records logged on its own thread, so
-                # reporting here cannot feed back into the queue.
-                logger.exception("sending buffered log records failed")
-            with self._send_finished:
+                logger.exception("sending buffered log records failed, they are lost")
+            with self._lock:
                 self._sends_finished += 1
                 self._send_finished.notify_all()
-            if stopping:
-                with self._lock:
-                    self._dropped += len(self._buffer)
-                    self._buffer.clear()
-                break
+
+        with self._lock:
+            unsent = len(self._buffer)
+            self._buffer.clear()
+        if unsent:
+            logger.warning(
+                "%d log records were not sent before the handler closed", unsent
+            )
 
     def _send_buffered(self) -> None:
         """Send everything queued with ``OpensearchClient.bulk``, if anything is.
 
-        Runs only on the flush thread. Records that still fail for a temporary
-        reason after ``bulk``'s retries go back to the front of the queue. Records
-        the cluster rejects, or that are lost to an exception, are added to
-        ``dropped``.
+        Runs only on the flush thread. It first reports the records discarded
+        because the buffer was full since the last send. Records that still fail
+        for a temporary reason after ``bulk``'s retries go back to the front of the
+        queue. Records the cluster rejects are discarded, with a warning.
         """
         with self._lock:
-            if not self._buffer:
-                return
+            overflowed = self._overflowed
+            self._overflowed = 0
             documents = self._buffer
-            self._buffer = deque()
+            self._buffer = deque(maxlen=self.buffer_limit)
+        if overflowed:
+            logger.warning(
+                "%d log records were discarded because the buffer was full", overflowed
+            )
+        if not documents:
+            return
 
-        try:
-            if not self._index_ready:
-                self._index_ready = bool(self._client.ensure_index(self.index))
-            result = self._client.bulk(documents, self.index, max_retries=_SEND_RETRIES)
-        except Exception:
-            with self._lock:
-                self._dropped += len(documents)
-            raise
+        if not self._index_ready:
+            self._index_ready = bool(self._client.ensure_index(self.index))
+        result = self._client.bulk(documents, self.index, max_retries=_SEND_RETRIES)
         if result:
             return
 
@@ -502,16 +487,11 @@ class OpensearchLogHandler(logging.Handler):
                 kept.append(failure["document"])
             else:
                 rejected += 1
+        if rejected:
+            logger.warning("the cluster rejected %d log records", rejected)
         with self._lock:
-            self._dropped += rejected
-            self._buffer.extendleft(reversed(kept))
-            self._drop_oldest_beyond_buffer_limit()
-
-    def _drop_oldest_beyond_buffer_limit(self) -> None:
-        """Drop the oldest queued records while more than ``buffer_limit`` wait.
-
-        The caller must hold the lock.
-        """
-        while len(self._buffer) > self.buffer_limit:
-            self._buffer.popleft()
-            self._dropped += 1
+            # Built with maxlen, the deque keeps the newest: the kept records, the
+            # oldest, are the first to go if they no longer all fit.
+            requeued = deque([*kept, *self._buffer], maxlen=self.buffer_limit)
+            self._overflowed += len(kept) + len(self._buffer) - len(requeued)
+            self._buffer = requeued

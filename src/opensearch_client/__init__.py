@@ -7,8 +7,8 @@ The public surface:
 
     from opensearch_client import OpensearchClient, OpensearchResult, client_from_env
 
-and, to ship log records to an index, ``OpensearchLogHandler`` with its
-``ECSLogFormatter`` and ``ECSLogContextFilter``.
+and, to ship log records to an index, ``OpensearchLogHandler``, optionally with
+``ECSLogFormatter`` and ``ECSLogContextFilter`` for ECS documents.
 """
 
 from opensearch_client.client import DEFAULT_INDEX, OpensearchClient

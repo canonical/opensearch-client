@@ -16,7 +16,11 @@ import uuid
 import pytest
 
 from opensearch_client.config import client_from_env
-from opensearch_client.log_handler import ECSLogContextFilter, OpensearchLogHandler
+from opensearch_client.log_handler import (
+    ECSLogContextFilter,
+    ECSLogFormatter,
+    OpensearchLogHandler,
+)
 
 if not (
     os.environ.get("OPENSEARCH_URL")
@@ -41,13 +45,10 @@ def test_handler_indexes_ecs_documents_that_a_real_cluster_accepts() -> None:
     assert client.get("_cluster/health")
     # The handler, not the test, must create the index.
     assert client.index_exists(index).data is False
-    handler = OpensearchLogHandler(
-        client,
-        index,
-        level=logging.INFO,
-        context_filter=ECSLogContextFilter(
-            service_name="test", extra_fields={"labels": {"env": "ci"}}
-        ),
+    handler = OpensearchLogHandler(client, index, level=logging.INFO)
+    handler.setFormatter(ECSLogFormatter())
+    handler.addFilter(
+        ECSLogContextFilter(service_name="test", extra_fields={"labels": {"env": "ci"}})
     )
     # A logger of its own that does not propagate, so only this handler sees the
     # records and nothing else in the process can feed into the index.
@@ -66,7 +67,6 @@ def test_handler_indexes_ecs_documents_that_a_real_cluster_accepts() -> None:
             logger.exception("lookup failed")
         handler.flush()
 
-        assert handler.dropped == 0
         assert client.refresh(index)
         search = client.search({"query": {"match_all": {}}, "size": 10}, index=index)
         assert search
