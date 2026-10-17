@@ -16,6 +16,7 @@ import time
 from collections.abc import Generator, Iterable
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from helpers import RecordingTransport
@@ -237,6 +238,53 @@ def test_shipped_records_carry_the_context_and_a_bad_record_is_reported() -> Non
         [document] = client.documents
         assert document["service"]["name"]
         assert ("bulk", "logs") in client.calls
+
+
+def test_the_document_comes_from_format_document_then_json_then_raw_text() -> None:
+    """A formatter's format_document is used if it has one.
+
+    Otherwise the formatted text is the document if it is a JSON object, and
+    failing that it is wrapped under ``message``.
+    """
+    document_formatter = MagicMock(spec=["format_document"])
+    document_formatter.format_document.return_value = {"message": "from a dict"}
+    json_formatter = MagicMock(spec=["format"])
+    json_formatter.format.return_value = '{"message": "from JSON"}'
+    text_formatter = MagicMock(spec=["format"])
+    text_formatter.format.return_value = "plain text"
+    client = FakeClient()
+
+    with _running(_handler(client)) as handler:
+        handler.setFormatter(document_formatter)
+        handler.emit(_record("one"))
+        handler.setFormatter(json_formatter)
+        handler.emit(_record("two"))
+        handler.setFormatter(text_formatter)
+        handler.emit(_record("three"))
+        handler.flush()
+
+    from_dict, from_json, from_text = client.documents
+    assert from_dict == {"message": "from a dict"}
+    assert from_json == {"message": "from JSON"}
+    assert from_text["message"] == "plain text"
+    assert "@timestamp" in from_text
+
+
+def test_a_format_document_that_returns_no_dict_falls_back_to_the_text() -> None:
+    """A non-dict from format_document is not shipped."""
+    formatter = MagicMock(spec=["format_document", "format"])
+    formatter.format_document.return_value = ["not", "a", "dict"]
+    formatter.format.return_value = "plain text"
+    client = FakeClient()
+
+    with _running(_handler(client)) as handler:
+        handler.setFormatter(formatter)
+        handler.emit(_record("one"))
+        handler.flush()
+
+    [document] = client.documents
+    assert document["message"] == "plain text"
+    assert "@timestamp" in document
 
 
 def test_a_slow_send_does_not_block_emit_and_the_queue_stays_bounded() -> None:

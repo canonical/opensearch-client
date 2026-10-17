@@ -344,23 +344,43 @@ class OpensearchLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         """Queue one record for the flush thread; never block and never raise.
 
-        The record is indexed as the formatter's output parsed as JSON, if that is
-        a JSON object, and otherwise as ``@timestamp`` and ``message``, the
-        formatted text. Once ``close`` has been called, the record is not queued.
+        ``record`` is formatted in one of three ways:
+
+        - If a logging.Formatter is attached and has a ``format_document`` method (see
+          ``ECSLogFormatter`` as an example), it is used to format the record into a
+          dict. No further transformations are applied, so long as the result is a dict.
+          If it is not, the string from the formatter's ``format`` is embedded as in
+          the last case below.
+        - Otherwise, if a logging.Formatter is attached, its ``format`` method is
+          applied, then:
+          - The formatted record string is parsed as a JSON dict. If this succeeds, the
+            dict is used with no further transformations.
+          - Otherwise, the formatted string is embedded in a new dict with
+            ``@timestamp`` and ``message``.
+
+        If ``close`` has been called, records are dropped instead of queued.
 
         Args:
             record (logging.LogRecord): the record to ship.
         """
         try:
-            text = self.format(record)
-            try:
-                document = json.loads(text)
-            except json.JSONDecodeError:
-                document = None
+            document: dict | None = None
+            text = None
+
+            format_document = getattr(self.formatter, "format_document", None)
+            if format_document is not None:
+                document = format_document(record)
+            else:
+                text = self.format(record)
+                try:
+                    document = json.loads(text)
+                except json.JSONDecodeError:
+                    document = None
+
             if not isinstance(document, dict):
                 document = {
                     "@timestamp": _format_timestamp(record.created),
-                    "message": text,
+                    "message": text if text is not None else self.format(record),
                 }
 
             with self._lock:
