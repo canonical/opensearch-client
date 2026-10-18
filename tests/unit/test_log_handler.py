@@ -388,6 +388,23 @@ def test_records_reach_an_index_that_is_missing_or_deleted() -> None:
         assert _messages(client) == ["one", "two"]
 
 
+def test_a_failed_index_check_is_not_repeated_on_every_send() -> None:
+    """An account that may write but not read index metadata is checked once."""
+    client = MagicMock()
+    client.ensure_index.return_value = Failure("forbidden", status=403)
+    client.bulk.return_value = Success({"failures": []})
+    handler = OpensearchLogHandler(client, "logs", flush_interval=3600.0)
+
+    with _running(handler):
+        handler.emit(_record("one"))
+        handler.flush()
+        handler.emit(_record("two"))
+        handler.flush()
+
+    assert client.ensure_index.call_count == 1
+    assert client.bulk.call_count == 2
+
+
 def test_records_survive_an_outage_without_hammering_the_cluster() -> None:
     """While the cluster is down, records are kept and resent once it is back.
 

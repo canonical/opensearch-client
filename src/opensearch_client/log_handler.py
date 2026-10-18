@@ -319,7 +319,7 @@ class OpensearchLogHandler(logging.Handler):
 
         self._client = client
         self.index = index
-        self._index_ready = False
+        self._should_check_index = True
 
         # The one lock: it guards the buffer, _overflowed and the send counters,
         # and _send_finished is built on it. Held only for quick updates, never
@@ -494,8 +494,12 @@ class OpensearchLogHandler(logging.Handler):
         if not documents:
             return
 
-        if not self._index_ready:
-            self._index_ready = bool(self._client.ensure_index(self.index))
+        if self._should_check_index:
+            # _should_check is always cleared, regardless of the outcome. It is possible
+            # for an account to have 'write' but not 'read metadata' permissions. In this
+            # case, clearing only on success would lead to repeated, unnecessary calls.
+            self._should_check_index = False
+            self._client.ensure_index(self.index)
         result = self._client.bulk(documents, self.index, max_retries=_SEND_RETRIES)
         if result:
             return
@@ -506,7 +510,7 @@ class OpensearchLogHandler(logging.Handler):
             status = failure["status"]
             error_type = (failure.get("error") or {}).get("type")
             if error_type == "index_not_found_exception":
-                self._index_ready = False  # create the index before the next send
+                self._should_check_index = True  # create the index before the next send
             is_temporary = (
                 status is None
                 or status in (408, 429)
