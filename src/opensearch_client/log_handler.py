@@ -17,7 +17,8 @@ what a log handler needs on top of it:
 
 What is indexed for a record is up to the handler's formatter. For ECS
 documents, set an ``ECSLogFormatter`` on the handler, and add an
-``ECSLogContextFilter`` for the host and service the logs come from.
+``ECSLogContextFilter`` for the host and service the logs come from, or pass
+``ecs_formatter=True`` and ``ecs_context=True`` to the handler.
 
 The threads, the lock and the events are described in
 ``docs/log-handler-concurrency.md``.
@@ -293,6 +294,8 @@ class OpensearchLogHandler(logging.Handler):
         flush_threshold: int = 1000,
         flush_interval: float = 5.0,
         buffer_limit: int = 10000,
+        add_ecs_formatter: bool = False,
+        add_ecs_context: bool = False,
     ) -> None:
         """Create the handler and start its background flush thread.
 
@@ -308,6 +311,9 @@ class OpensearchLogHandler(logging.Handler):
             buffer_limit (int): the most records held in the buffer; beyond this
                 the oldest are discarded, and a warning says how many. Keep it at
                 or above ``flush_threshold``.
+            add_ecs_formatter (bool): set an ``ECSLogFormatter`` on the handler.
+            add_ecs_context (bool): add an ``ECSLogContextFilter`` with its defaults to
+                the handler. For a service name or extra fields, add one yourself.
         """
         super().__init__(level)
 
@@ -339,6 +345,10 @@ class OpensearchLogHandler(logging.Handler):
         )
         # Filter out records emitted by the flushing thread
         self.addFilter(lambda _: current_thread() is not self._flush_thread)
+        if add_ecs_formatter:
+            self.setFormatter(ECSLogFormatter())
+        if add_ecs_context:
+            self.addFilter(ECSLogContextFilter())
         self._flush_thread.start()
 
     def emit(self, record: logging.LogRecord) -> None:
