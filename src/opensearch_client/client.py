@@ -638,6 +638,43 @@ class OpensearchClient:
             return Success(False)
         return res
 
+    def ensure_index(
+        self, index: str | None = None, body: dict[str, Any] | None = None
+    ) -> OpensearchResult[bool]:
+        """Create the index if it does not exist yet.
+
+        Args:
+            index: the index to check or create; defaults to ``default_index``.
+            body: the settings and mappings to create the index with, if needed.
+
+        Returns:
+            True if the index was created, False if it already existed, or the
+            failure of the existence check or of the creation.
+        """
+        name = index or self.default_index
+        exists_result = self.index_exists(name)
+        if not exists_result:
+            return exists_result
+        if exists_result.data:
+            return Success(False)
+        create_result = self.create_index(body or {}, name)
+        if not create_result:
+            error_body = create_result.data
+            error = error_body.get("error") if isinstance(error_body, dict) else None
+            # catch the race condition where the index was created between the check
+            # and creation API call
+            if (
+                isinstance(error, dict)
+                and error.get("type") == "resource_already_exists_exception"
+            ):
+                return Success(False)
+            return Failure(
+                create_result.reason,
+                data=create_result.data,
+                status=create_result.status,
+            )
+        return Success(True)
+
     def list_indices(self, pattern: str = "*") -> OpensearchResult[list[str]]:
         """List the names of indices matching a pattern, sorted.
 

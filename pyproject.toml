@@ -53,7 +53,7 @@ set_env = { PYTHONPATH = "{tox_root}/src" }
 [tool.tox.env.lint]
 base_python = "py312"
 description = "Check code against coding style standards"
-allowlist_externals = ["bash"]
+allowlist_externals = ["bash", "find"]
 skip_install = true
 deps = [
   "ruff==0.15.20",
@@ -64,48 +64,26 @@ deps = [
 # Run every check even after one fails, so a single run reports all findings.
 ignore_errors = true
 commands = [
+  [ "bash", "tests/lint/ascii-check.sh", "py" ],
+  [ "bash", "tests/lint/ascii-check.sh", "sh" ],
+  [ "ruff", "check", "src", "tests" ],
+  [ "ruff", "format", "--check", "src", "tests" ],
+  [ "codespell", "." ],
   [
-    "bash",
-    "tests/lint/ascii-check.sh",
-    "py",
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shellcheck", "-f", "gcc", "{\\}", "+",
   ],
   [
-    "bash",
-    "tests/lint/ascii-check.sh",
-    "sh",
-  ],
-  [
-    "ruff",
-    "check",
-    "src",
-    "tests",
-  ],
-  [
-    "ruff",
-    "format",
-    "--check",
-    "src",
-    "tests",
-  ],
-  [
-    "codespell",
-    ".",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.sh' -not -path './.*' -exec shellcheck -f gcc {} +",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.sh' -not -path './.*' -exec shfmt -d -s -i 4 -l {} +",
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shfmt", "-d", "-s", "-i", "4", "-l", "{\\}", "+",
   ],
 ]
 
 [tool.tox.env.fmt]
 description = "Automatically format code"
-allowlist_externals = ["bash"]
+allowlist_externals = ["find"]
 skip_install = true
 deps = [
   "ruff==0.15.20",
@@ -116,33 +94,18 @@ deps = [
   "mdformat-pyproject",
 ]
 commands = [
+  [ "ruff", "check", "--fix", "src", "tests" ],
+  [ "ruff", "format", "src", "tests" ],
+  [ "codespell", "-w", "." ],
   [
-    "ruff",
-    "check",
-    "--fix",
-    "src",
-    "tests",
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shfmt", "-w", "-s", "-i", "4", "{\\}", "+",
   ],
   [
-    "ruff",
-    "format",
-    "src",
-    "tests",
-  ],
-  [
-    "codespell",
-    "-w",
-    ".",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.sh' -not -path './.*' -exec shfmt -w -s -i 4 {} +",
-  ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.md' -not -path './.*' -exec mdformat {} +",
+    "find", ".", "-name", "*.md",
+    "-not", "-path", "./.*",
+    "-exec", "mdformat", "{\\}", "+",
   ],
 ]
 
@@ -167,27 +130,16 @@ commands = [["vulture"]]
 [tool.tox.env.doc-checks]
 description = "Run doc checks"
 package = "skip"
-allowlist_externals = ["bash"]
+allowlist_externals = ["bash", "find"]
 deps = ["mdformat", "mdformat-gfm", "mdformat-pyproject", "pymarkdownlnt"]
 commands = [
+  [ "bash", "tests/lint/ascii-check.sh", "md" ],
   [
-    "bash",
-    "tests/lint/ascii-check.sh",
-    "md",
+    "find", ".", "-name", "*.md",
+    "-not", "-path", "./.*",
+    "-exec", "mdformat", "--check", "{\\}", "+",
   ],
-  [
-    "bash",
-    "-c",
-    "find . -name '*.md' -not -path './.*' -exec mdformat --check {} +",
-  ],
-  [
-    "pymarkdown",
-    "scan",
-    "--recurse",
-    "README.md",
-    "docs",
-    "tests",
-  ],
+  [ "pymarkdown", "scan", "--recurse", "README.md", "docs", "tests" ],
 ]
 
 [tool.tox.env.vale]
@@ -199,17 +151,10 @@ deps = ["vale==3.22.0.0"]
 # configuration, with the overrides that the script writes layered on top.
 set_env = { XDG_CONFIG_HOME = "{tox_root}/.vale" }
 commands = [
+  [ "bash", "tests/lint/get-vale-config.sh" ],
   [
-    "bash",
-    "tests/lint/get-vale-config.sh",
-  ],
-  [
-    "vale",
-    "--config=.vale/overrides.ini",
-    "--glob=*.md",
-    "README.md",
-    "docs",
-    "tests",
+    "vale", "--config=.vale/overrides.ini", "--glob=*.md",
+    "README.md", "docs", "tests",
   ],
 ]
 
@@ -219,18 +164,10 @@ description = "Run unit tests"
 deps = ["coverage[toml]", "pytest"]
 commands = [
   [
-    "coverage",
-    "run",
-    "--source=src/opensearch_client",
-    "-m",
-    "pytest",
-    "-s",
-    "tests/unit/",
+    "coverage", "run", "--source=src/opensearch_client",
+    "-m", "pytest", "-s", "tests/unit/",
   ],
-  [
-    "coverage",
-    "report",
-  ],
+  [ "coverage", "report" ],
 ]
 
 [tool.tox.env.functional]
