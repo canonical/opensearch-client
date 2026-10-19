@@ -36,7 +36,12 @@ from datetime import datetime, timezone
 from threading import Event, Lock, Thread, current_thread
 from typing import Any
 
-from opensearch_client.client import OpensearchClient
+from opensearch_client.client import (
+    OpensearchClient,
+    bulk_retry_delays,
+    is_transient_failure,
+)
+from opensearch_client.transport import REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -645,13 +650,7 @@ class OpensearchLogHandler(logging.Handler):
             error_type = (failure.get("error") or {}).get("type")
             if error_type == "index_not_found_exception":
                 self._should_check_index = True  # create the index before the next send
-            is_temporary = (
-                status is None
-                or status in (HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS)
-                or status >= 500
-                or error_type in TRANSIENT_ERRORS
-            )
-            if is_temporary:
+            if is_transient_failure(failure):
                 kept.append(failure["document"])
             else:
                 rejected += 1
