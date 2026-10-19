@@ -495,8 +495,8 @@ class OpensearchLogHandler(logging.Handler):
             return
 
         if self._should_check_index:
-            # _should_check is always cleared, regardless of the outcome. It is possible
-            # for an account to have 'write' but not 'read metadata' permissions. In this
+            # _should_check_index is always cleared, regardless of the outcome. An
+            # account may have 'write' but not 'read metadata' permissions. In this
             # case, clearing only on success would lead to repeated, unnecessary calls.
             self._should_check_index = False
             self._client.ensure_index(self.index)
