@@ -194,7 +194,7 @@ def test_bulk_indexes_documents_across_batches() -> None:
         assert [row["name"] for row in rows.data] == ["host-7"]
 
 
-def test_bulk_reports_a_rejected_document() -> None:
+def test_bulk_reports_rejected_documents_and_retries_only_transient_ones() -> None:
     index = _unique("opensearch_client-func-bulk-reject")
     with _temporary_indices(index):
         assert _client.create_index(
@@ -215,6 +215,23 @@ def test_bulk_reports_a_rejected_document() -> None:
         assert failures[0]["document"] == {"n": "not-an-int"}
         assert failures[0]["status"] >= 400
         assert failures[0]["error"] is not None
+
+        # A rejected document is a permanent failure: even with retries allowed it
+        # is sent only once.
+        permanent = _client.bulk([{"n": "not-an-int"}], index=index, max_retries=3)
+        assert not permanent
+        assert permanent.data["batches"] == 1
+
+        # A write-blocked index, as a full disk leaves it, fails every item with a
+        # 403 cluster_block_exception. The status alone looks permanent, but the
+        # error type marks it transient, so bulk retries it.
+        settings = {"index.blocks.write": True}
+        assert _client.request("PUT", f"{index}/_settings", settings).ok
+        blocked = _client.bulk([{"n": 4}], index=index, max_retries=1)
+        assert not blocked
+        assert blocked.data["batches"] == 2  # the first send and one retry
+        error = blocked.data["failures"][0]["error"]
+        assert error["type"] == "cluster_block_exception"
 
 
 def test_index_template_pins_a_field_type_before_the_first_document() -> None:
