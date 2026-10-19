@@ -181,40 +181,24 @@ def _tally_bulk_items(
 def is_transient_failure(failure: dict[str, Any]) -> bool:
     """Check whether a failed document is worth sending again.
 
-    A listed error type decides first, then the status. Anything unrecognized is
-    transient, so the document is retried rather than given up on.
-
-    Args:
-        failure (dict[str, Any]): the failure's ``status`` and ``error`` (a
-            per-item error) or ``reason`` (a failed request), as ``bulk`` reports
-            it.
-
-    Returns:
-        bool: True if the failure is transient, False if it is permanent.
+    The error type decides first, then the status. Anything unrecognized is
+    treated as transient, so it gets retried.
     """
     error = failure.get("error")
     error_type = error.get("type") if isinstance(error, dict) else None
+    status = failure.get("status")
+
     if error_type in PERMANENT_ERRORS:
         return False
-    if error_type in TRANSIENT_ERRORS:
-        return True
-    status = failure.get("status")
-    if status is None or status in TRANSIENT_STATUSES:
+    if error_type in TRANSIENT_ERRORS or status in TRANSIENT_STATUSES:
         return True
     return status not in PERMANENT_STATUSES
 
 
 def bulk_retry_delays(max_retries: int) -> list[float]:
-    """Return the seconds ``bulk`` waits before each of its retries.
+    """Return the seconds to wait before each of ``max_retries`` retries, in order.
 
-    The first wait is BULK_RETRY_BASE_DELAY, and each later one is twice the one
-    before, up to BULK_RETRY_MAX_DELAY.
-
-    Args:
-        max_retries (int): how many retries ``bulk`` may make.
-
-    Returns:
-        list[float]: one wait per retry, in order.
+    The schedule is in the comment above BULK_RETRY_BASE_DELAY.
     """
     delays = []
     delay = BULK_RETRY_BASE_DELAY
@@ -561,7 +545,7 @@ class OpensearchClient:
         permanent_failures: list[BulkFailure] = []
         transient_failures: list[BulkFailure] = []
 
-        # Don't sleep on the first attempt, so adding 0 as the first item
+        # The first attempt doesn't wait.
         for delay in [0, *bulk_retry_delays(max_retries)]:
             sleep(delay)
             failures = self._send_bulk(pending, max_bytes, action, summary)
