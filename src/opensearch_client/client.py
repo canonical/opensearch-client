@@ -659,6 +659,15 @@ class OpensearchClient:
             return Success(False)
         create_result = self.create_index(body or {}, name)
         if not create_result:
+            error_body = create_result.data
+            error = error_body.get("error") if isinstance(error_body, dict) else None
+            # catch the race condition where the index was created between the check
+            # and creation API call
+            if (
+                isinstance(error, dict)
+                and error.get("type") == "resource_already_exists_exception"
+            ):
+                return Success(False)
             return Failure(
                 create_result.reason,
                 data=create_result.data,

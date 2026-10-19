@@ -24,6 +24,7 @@ The threads, the lock and the events are described in
 ``docs/explanation/log-handler-concurrency.md``.
 """
 
+import copy
 import json
 import logging
 import os
@@ -114,7 +115,7 @@ class ECSLogContextFilter(logging.Filter):
                 ``{"service": {"version": "1.2"}, "labels": {"env": "prod"}}``.
         """
         super().__init__()
-        json.dumps(extra_fields)  # Ensure JSON serializeable
+        json.dumps(extra_fields)  # Ensure JSON serializable
 
         if service_name is None:
             # python -m package.module gives the module, a script gives its name.
@@ -135,7 +136,7 @@ class ECSLogContextFilter(logging.Filter):
             },
             "event": {"dataset": service_name},
         }
-        _deep_merge(self._context, extra_fields or {})
+        _deep_merge(self._context, copy.deepcopy(extra_fields or {}))
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Set the context on the record, and let the record through.
@@ -309,12 +310,20 @@ class OpensearchLogHandler(logging.Handler):
                 without starting more sends.
             flush_interval (float): flush at least this often, in seconds.
             buffer_limit (int): the most records held in the buffer; beyond this
-                the oldest are discarded, and a warning says how many. Keep it at
-                or above ``flush_threshold``.
+                the oldest are discarded, and a warning says how many.
             add_ecs_formatter (bool): set an ``ECSLogFormatter`` on the handler.
             add_ecs_context (bool): add an ``ECSLogContextFilter`` with its defaults to
                 the handler. For a service name or extra fields, add one yourself.
+
+        Raises:
+            ValueError: if ``flush_threshold`` is above ``buffer_limit`` (the buffer
+                could never reach it).
         """
+        if flush_threshold > buffer_limit:
+            raise ValueError(
+                f"flush_threshold ({flush_threshold}) must not exceed "
+                f"buffer_limit ({buffer_limit})"
+            )
         super().__init__(level)
 
         self._client = client

@@ -215,6 +215,19 @@ def test_context_reaches_every_document_and_extra_values_do_not_leak() -> None:
     assert second["labels"] == {"env": "test"}
 
 
+def test_extra_fields_is_copied() -> None:
+    """The filter keeps its own copy of extra_fields."""
+    extra_fields = {"labels": {"env": "prod"}}
+    context_filter = ECSLogContextFilter(extra_fields=extra_fields)
+    extra_fields["labels"]["env"] = "changed"
+    record = _record("one")
+
+    context_filter.filter(record)
+
+    document = ECSLogFormatter().format_document(record)
+    assert document["labels"] == {"env": "prod"}
+
+
 def test_shipped_records_carry_the_context_and_a_bad_record_is_reported() -> None:
     """With the ECS formatter and filter set, documents name the service.
 
