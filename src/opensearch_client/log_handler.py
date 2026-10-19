@@ -279,6 +279,94 @@ class ECSLogFormatter(logging.Formatter):
         return cleaned
 
 
+class _BoundedQueue:
+    """A thread-safe queue of documents that drops its oldest past a limit.
+
+    Callers do not need a lock; the Queue applies internal thread-safety.
+
+    The queue counts the records it drops, in ``dropped_count``.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """Create an empty queue.
+
+        Args:
+            limit (int): a maximum queue size. Records will be dropped, oldest-first,
+                if limit is exceeded.
+        """
+        self._lock = Lock()
+        self._limit = limit
+        self._documents: deque[dict[str, Any]] = deque(maxlen=limit)
+        self._dropped = 0
+        self._closed = False
+
+    def __len__(self) -> int:
+        """How many documents are in the queue."""
+        with self._lock:
+            return len(self._documents)
+
+    def enqueue(self, document: dict[str, Any]) -> None:
+        """Add a document at the back of the queue, dropping the oldest doc if full.
+
+        If ``close`` has been called, the document is ignored.
+
+        Args:
+            document (dict[str, Any]): the document to add.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            if len(self._documents) == self._limit:
+                self._dropped += 1
+            self._documents.append(document)
+
+    @property
+    def dropped_count(self) -> int:
+        """How many documents the queue has dropped since it was created."""
+        with self._lock:
+            return self._dropped
+
+    def dequeue_all(self) -> list[dict[str, Any]]:
+        """Remove and return every document in the queue.
+
+        Returns:
+            list[dict[str, Any]]: the documents, oldest first.
+        """
+        with self._lock:
+            documents = list(self._documents)
+            self._documents.clear()
+        return documents
+
+    def requeue(self, documents: list[dict[str, Any]]) -> None:
+        """Return ``documents`` to the front of the queue.
+
+        The regular "drop records oldest-first if limit is exceeded" logic
+        applies. If the queue has been closed, the docs are ignored.
+
+        Args:
+            documents (list[dict[str, Any]]): the documents, oldest first.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            # Create a new deque and swap
+            self._dropped += len(documents) + len(self._documents) - self._limit
+            requeued = deque([*documents, *self._documents], maxlen=self._limit)
+            self._documents = requeued
+
+    def close(self) -> int:
+        """Discard every document and reject all future enqueueing requests.
+
+        Returns:
+            int: how many documents were discarded.
+        """
+        with self._lock:
+            self._closed = True
+            discarded = len(self._documents)
+            self._documents.clear()
+        return discarded
+
+
 class OpensearchLogHandler(logging.Handler):
     """A :class:`logging.Handler` that queues records and ships them to OpenSearch.
 
@@ -330,16 +418,13 @@ class OpensearchLogHandler(logging.Handler):
         self.index = index
         self._should_check_index = True
 
-        # The one lock: it guards the buffer, _overflowed and the send counters,
-        # and _send_finished is built on it. Held only for quick updates, never
-        # while sending, so a slow send does not block logging.
-        self._lock = Lock()
+        self._queue = _BoundedQueue(buffer_limit)
+        self._flush_threshold = flush_threshold
+        # Read and written only by the flush thread.
+        self._reported_drop_count = 0
 
-        self.flush_threshold = flush_threshold
-        self.buffer_limit = buffer_limit
-        # Appending to a full deque discards its oldest record.
-        self._buffer: deque[dict[str, Any]] = deque(maxlen=buffer_limit)
-        self._overflowed = 0
+        # Guards the send counters. Held only for quick updates, never while sending.
+        self._lock = Lock()
         # See "Waiting for a flush" in docs/explanation/log-handler-concurrency.md.
         self._sends_started = 0
         self._sends_finished = 0
@@ -402,16 +487,15 @@ class OpensearchLogHandler(logging.Handler):
                     "message": text if text is not None else self.format(record),
                 }
 
-            with self._lock:
-                if self._flush_thread_stop.is_set():
-                    return
-                if len(self._buffer) == self.buffer_limit:
-                    self._overflowed += 1
-                # Wake the flush thread only when this record fills the buffer.
-                was_below_threshold = len(self._buffer) < self.flush_threshold
-                self._buffer.append(document)
-                reached_threshold = len(self._buffer) >= self.flush_threshold
-            if was_below_threshold and reached_threshold:
+            if self._flush_thread_stop.is_set():
+                return
+            # Wake the flush thread only when this record brings the queue up to
+            # the threshold, not for every record while it stays above it. Other
+            # threads may enqueue in between: that can wake it twice, but never
+            # leaves it unwoken.
+            was_below_threshold = len(self._queue) < self._flush_threshold
+            self._queue.enqueue(document)
+            if was_below_threshold and len(self._queue) >= self._flush_threshold:
                 self._flush_thread_wakeup.set()
         except RecursionError:
             raise
@@ -475,9 +559,7 @@ class OpensearchLogHandler(logging.Handler):
                 self._sends_finished += 1
                 self._send_finished.notify_all()
 
-        with self._lock:
-            unsent = len(self._buffer)
-            self._buffer.clear()
+        unsent = self._queue.close()
         if unsent:
             logger.warning(
                 "%d log records were not sent before the handler closed", unsent
@@ -491,15 +573,14 @@ class OpensearchLogHandler(logging.Handler):
         for a temporary reason after ``bulk``'s retries go back to the front of the
         queue. Records the cluster rejects are discarded, with a warning.
         """
-        with self._lock:
-            overflowed = self._overflowed
-            self._overflowed = 0
-            documents = self._buffer
-            self._buffer = deque(maxlen=self.buffer_limit)
-        if overflowed:
+        documents = self._queue.dequeue_all()
+        dropped_count = self._queue.dropped_count
+        if dropped_count > self._reported_drop_count:
             logger.warning(
-                "%d log records were discarded because the buffer was full", overflowed
+                "%d log records were discarded because the buffer was full",
+                dropped_count - self._reported_drop_count,
             )
+            self._reported_drop_count = dropped_count
         if not documents:
             return
 
@@ -532,9 +613,4 @@ class OpensearchLogHandler(logging.Handler):
                 rejected += 1
         if rejected:
             logger.warning("the cluster rejected %d log records", rejected)
-        with self._lock:
-            # Built with maxlen, the deque keeps the newest: the kept records, the
-            # oldest, are the first to go if they no longer all fit.
-            requeued = deque([*kept, *self._buffer], maxlen=self.buffer_limit)
-            self._overflowed += len(kept) + len(self._buffer) - len(requeued)
-            self._buffer = requeued
+        self._queue.requeue(kept)

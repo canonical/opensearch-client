@@ -14,23 +14,22 @@ the two sides work together, while comments in the code point to its sections.
 - Any thread can call `flush` or `close`. `logging.shutdown` calls both when the
   program exits.
 
-## Shared state and the lock
+## Shared state and locks
 
-The threads share a few values, and one lock, `_lock`, protects all of them:
+The threads share two things, each with its own lock:
 
-- `_buffer`: the records waiting to be sent. It holds at most `buffer_limit`;
-  adding one more drops the oldest.
-- `_overflowed`: how many records were dropped that way since the last warning.
+- `_queue` (`_BoundedQueue`): the records waiting to be sent. It holds at most
+  `buffer_limit`; adding one more drops the oldest.
+  - The queue is thread-safe and counts how many records it has dropped.
 - `_sends_started` and `_sends_finished`: how many sends have started and
-  finished. `flush` uses them to know when it can return.
+  finished, guarded by `_lock`. `flush` uses them to know when it can return.
 
-`_send_finished` looks like a second lock, but it is not: it is a `Condition`
-built on `_lock`. It only lets `flush` sleep until the flush thread says a send
-finished.
+`_send_finished` is a `Condition` built on `_lock`. It lets `flush` sleep until
+the flush thread says a send finished.
 
-The lock is only held for a moment at a time, never during a send. To send, the
-flush thread swaps the buffer for an empty one under the lock, then sends the
-old one without it. So a slow cluster never makes logging wait.
+Neither lock is held for more than a moment, and never during a send. To send,
+the flush thread takes every record out of the queue in one step, then sends
+them without any lock. So a slow cluster never makes logging wait.
 
 ## Events
 
