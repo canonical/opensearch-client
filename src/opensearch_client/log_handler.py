@@ -21,7 +21,7 @@ documents, set an ``ECSLogFormatter`` on the handler, and add an
 ``ecs_formatter=True`` and ``ecs_context=True`` to the handler.
 
 The threads, the lock and the events are described in
-``docs/log-handler-concurrency.md``.
+``docs/explanation/log-handler-concurrency.md``.
 """
 
 import json
@@ -331,7 +331,7 @@ class OpensearchLogHandler(logging.Handler):
         # Appending to a full deque discards its oldest record.
         self._buffer: deque[dict[str, Any]] = deque(maxlen=buffer_limit)
         self._overflowed = 0
-        # See "Waiting for a flush" in docs/log-handler-concurrency.md.
+        # See "Waiting for a flush" in docs/explanation/log-handler-concurrency.md.
         self._sends_started = 0
         self._sends_finished = 0
         self._send_finished = Condition(self._lock)
@@ -420,7 +420,7 @@ class OpensearchLogHandler(logging.Handler):
         if not self._flush_thread.is_alive():
             return
         with self._lock:
-            # See "Waiting for a flush" in docs/log-handler-concurrency.md.
+            # See "Waiting for a flush" in docs/explanation/log-handler-concurrency.md.
             awaited_send = self._sends_started + 1
             self._flush_thread_wakeup.set()
             self._send_finished.wait_for(
@@ -452,7 +452,7 @@ class OpensearchLogHandler(logging.Handler):
         stopping = False
         while not stopping:
             self._flush_thread_wakeup.wait(self.flush_interval)
-            # See "Starting a send" in docs/log-handler-concurrency.md.
+            # See "Starting a send" in docs/explanation/log-handler-concurrency.md.
             with self._lock:
                 self._flush_thread_wakeup.clear()
                 self._sends_started += 1

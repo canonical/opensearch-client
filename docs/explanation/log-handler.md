@@ -1,7 +1,7 @@
 # Log handler
 
 _See also: [Library](library.md),
-[Log handler concurrency](/docs/log-handler-concurrency.md)_
+[Log handler concurrency](log-handler-concurrency.md)_
 
 `OpensearchLogHandler` is a `logging.Handler` that sends emitted records to an
 OpenSearch index.

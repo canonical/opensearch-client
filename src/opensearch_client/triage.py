@@ -3,8 +3,8 @@
 
 """Functions supporting threat hunting / log triage.
 
-See docs/cli.md for the workflow, and docs/sql-explain.md for the SQL ``_explain``
-output that ``where_to_dsl`` and its helpers parse.
+See docs/how-to/triage-hunt.md for the workflow, and docs/explanation/sql-explain.md
+for the SQL ``_explain`` output that ``where_to_dsl`` and its helpers parse.
 """
 
 import json
@@ -146,7 +146,8 @@ def where_to_dsl(client: OpensearchClient, index: str, where: str) -> dict[str, 
     Runs ``SELECT * FROM <index> WHERE <where>`` through the SQL _explain endpoint and
     extracts ``query`` from the pushed-down request. Raises if the predicate yields no
     pushed-down query (e.g. it uses SQL features computed in-engine, not pushed down).
-    See docs/sql-explain.md for an example of the _explain output parsed here.
+    See docs/explanation/sql-explain.md for an example of the _explain output parsed
+    here.
 
     Args:
         client (OpensearchClient): the client used to reach the cluster.
