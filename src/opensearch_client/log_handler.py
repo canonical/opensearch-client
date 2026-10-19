@@ -33,7 +33,7 @@ import sys
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from threading import Condition, Event, Lock, Thread, current_thread
+from threading import Event, Lock, Thread, current_thread
 from typing import Any
 
 from opensearch_client.client import OpensearchClient
@@ -367,6 +367,57 @@ class _BoundedQueue:
         return discarded
 
 
+class _Waitlist:
+    """A thread-safe Event list.
+
+    Client threads ``register`` to get an ``Event`` that they may wait on. Service
+    threads ``set`` the ``Event`` objects to signal that a requested action has
+    been taken.
+    """
+
+    def __init__(self) -> None:
+        """Create a waitlist."""
+        self._lock = Lock()
+        self._signals: list[Event] = []
+        self._closed = False
+
+    def register(self) -> Event:
+        """Add a signal to the waitlist.
+
+        If the Waitlist is closed, all new Events are pre-set.
+
+        Returns:
+            Event: a signal.
+        """
+        signal = Event()
+        with self._lock:
+            if self._closed:
+                signal.set()
+            else:
+                self._signals.append(signal)
+        return signal
+
+    def take_all(self) -> list[Event]:
+        """Remove and return every registered signal.
+
+        Returns:
+            list[Event]: the signals, in the order they were registered.
+        """
+        with self._lock:
+            signals = self._signals
+            self._signals = []
+        return signals
+
+    def close(self) -> None:
+        """Set every registered signal, and auto-set every future signal."""
+        with self._lock:
+            self._closed = True
+            signals = self._signals
+            self._signals = []
+        for signal in signals:
+            signal.set()
+
+
 class OpensearchLogHandler(logging.Handler):
     """A :class:`logging.Handler` that queues records and ships them to OpenSearch.
 
@@ -423,12 +474,8 @@ class OpensearchLogHandler(logging.Handler):
         # Read and written only by the flush thread.
         self._reported_drop_count = 0
 
-        # Guards the send counters. Held only for quick updates, never while sending.
-        self._lock = Lock()
-        # See "Waiting for a flush" in docs/explanation/log-handler-concurrency.md.
-        self._sends_started = 0
-        self._sends_finished = 0
-        self._send_finished = Condition(self._lock)
+        # See "Flush clients" in docs/explanation/log-handler-concurrency.md.
+        self._flush_requests = _Waitlist()
 
         # The thread starts last so that attributes it uses exist before it runs.
         self.flush_interval = flush_interval
@@ -447,6 +494,8 @@ class OpensearchLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """Queue one record for the flush thread; never block and never raise.
+
+        Note: ``emit`` may be called simultaneously from multiple client threads.
 
         ``record`` is formatted in one of three ways:
 
@@ -505,26 +554,23 @@ class OpensearchLogHandler(logging.Handler):
     def flush(self) -> None:
         """Ask the flush thread to send the queue now, and wait for it to finish.
 
+        Note: ``flush`` may be called simultaneously from multiple client threads.
+
         Every record queued before the call is in the send that ``flush`` waits
         for. This tries again even while the handler is waiting after a failed
-        send. Waits at most 10 seconds, and returns at once if the handler is
-        closed.
+        send. Waits at most ``_FLUSH_WAIT_SECONDS`` seconds, and returns at once if
+        the handler is closed.
         """
-        if not self._flush_thread.is_alive():
-            return
-        with self._lock:
-            # See "Waiting for a flush" in docs/explanation/log-handler-concurrency.md.
-            awaited_send = self._sends_started + 1
-            self._flush_thread_wakeup.set()
-            self._send_finished.wait_for(
-                lambda: self._sends_finished >= awaited_send, _FLUSH_WAIT_SECONDS
-            )
+        # See "Flush clients" in docs/explanation/log-handler-concurrency.md.
+        flush_attempted_signal = self._flush_requests.register()
+        self._flush_thread_wakeup.set()
+        flush_attempted_signal.wait(_FLUSH_WAIT_SECONDS)
 
     def close(self) -> None:
         """Stop the flush thread after its final send, then close the handler.
 
-        Waits at most 5 seconds for that final send. Records it cannot send are
-        discarded, and a warning says how many.
+        Waits at most ``_CLOSE_JOIN_SECONDS`` seconds for that final send.
+        Records it cannot send are discarded, and a warning says how many.
         """
         self._flush_thread_stop.set()
         self._flush_thread_wakeup.set()
@@ -545,20 +591,20 @@ class OpensearchLogHandler(logging.Handler):
         stopping = False
         while not stopping:
             self._flush_thread_wakeup.wait(self.flush_interval)
-            # See "Starting a send" in docs/explanation/log-handler-concurrency.md.
-            with self._lock:
-                self._flush_thread_wakeup.clear()
-                self._sends_started += 1
+            # See "Flush clients" in docs/explanation/log-handler-concurrency.md.
+            self._flush_thread_wakeup.clear()
             # Read after the clear: close sets the stop request, then the wakeup.
             stopping = self._flush_thread_stop.is_set()
+            # Taken before _send_buffered empties the queue.
+            flush_attempted_signals = self._flush_requests.take_all()
             try:
                 self._send_buffered()
             except Exception:
                 logger.exception("sending buffered log records failed, they are lost")
-            with self._lock:
-                self._sends_finished += 1
-                self._send_finished.notify_all()
+            for flush_attempted_signal in flush_attempted_signals:
+                flush_attempted_signal.set()
 
+        self._flush_requests.close()
         unsent = self._queue.close()
         if unsent:
             logger.warning(

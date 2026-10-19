@@ -26,6 +26,7 @@ from opensearch_client.log_handler import (
     ECSLogContextFilter,
     ECSLogFormatter,
     OpensearchLogHandler,
+    _Waitlist,
 )
 from opensearch_client.result import Failure, OpensearchResult, Success
 
@@ -259,12 +260,16 @@ def test_the_document_comes_from_format_document_then_json_then_raw_text() -> No
     Otherwise the formatted text is the document if it is a JSON object, and
     failing that it is wrapped under ``message``.
     """
-    document_formatter = MagicMock(spec=["format_document"])
-    document_formatter.format_document.return_value = {"message": "from a dict"}
-    json_formatter = MagicMock(spec=["format"])
-    json_formatter.format.return_value = '{"message": "from JSON"}'
-    text_formatter = MagicMock(spec=["format"])
-    text_formatter.format.return_value = "plain text"
+    document_formatter = MagicMock(
+        spec=["format_document"],
+        format_document=MagicMock(return_value={"message": "from a dict"}),
+    )
+    json_formatter = MagicMock(
+        spec=["format"], format=MagicMock(return_value='{"message": "from JSON"}')
+    )
+    text_formatter = MagicMock(
+        spec=["format"], format=MagicMock(return_value="plain text")
+    )
     client = FakeClient()
 
     with _running(_handler(client)) as handler:
@@ -285,9 +290,11 @@ def test_the_document_comes_from_format_document_then_json_then_raw_text() -> No
 
 def test_a_format_document_that_returns_no_dict_falls_back_to_the_text() -> None:
     """A non-dict from format_document is not shipped."""
-    formatter = MagicMock(spec=["format_document", "format"])
-    formatter.format_document.return_value = ["not", "a", "dict"]
-    formatter.format.return_value = "plain text"
+    formatter = MagicMock(
+        spec=["format_document", "format"],
+        format_document=MagicMock(return_value=["not", "a", "dict"]),
+        format=MagicMock(return_value="plain text"),
+    )
     client = FakeClient()
 
     with _running(_handler(client)) as handler:
@@ -403,9 +410,10 @@ def test_records_reach_an_index_that_is_missing_or_deleted() -> None:
 
 def test_a_failed_index_check_is_not_repeated_on_every_send() -> None:
     """An account that may write but not read index metadata is checked once."""
-    client = MagicMock()
-    client.ensure_index.return_value = Failure("forbidden", status=403)
-    client.bulk.return_value = Success({"failures": []})
+    client = MagicMock(
+        ensure_index=MagicMock(return_value=Failure("forbidden", status=403)),
+        bulk=MagicMock(return_value=Success({"failures": []})),
+    )
     handler = OpensearchLogHandler(client, "logs", flush_interval=3600.0)
 
     with _running(handler):
@@ -537,3 +545,16 @@ def test_close_sends_the_remaining_records_and_drops_later_ones() -> None:
     handler.flush()  # logging.shutdown flushes handlers that were already closed
     assert time.monotonic() - started < _WAIT_SECONDS
     assert _messages(client) == ["last"]
+
+
+def test_closing_a_waitlist_releases_its_signals() -> None:
+    """After close, nobody waiting on the waitlist can be left waiting."""
+    waitlist = _Waitlist()
+    registered_before = waitlist.register()
+
+    waitlist.close()
+    registered_after = waitlist.register()
+
+    assert registered_before.is_set()
+    assert registered_after.is_set()
+    assert waitlist.take_all() == []
