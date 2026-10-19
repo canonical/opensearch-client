@@ -558,31 +558,37 @@ class OpensearchClient:
             "failures": [],
         }
 
-        failures = self._send_bulk(pending, max_bytes, action, summary)
         permanent_failures: list[BulkFailure] = []
-        for delay in bulk_retry_delays(max_retries):
-            transient: list[BulkFailure] = []
-            for item, failure in failures:
-                if is_transient_failure(failure):
-                    transient.append((item, failure))
-                else:
-                    permanent_failures.append((item, failure))
-            failures = transient
-            if not failures:
-                break
+        transient_failures: list[BulkFailure] = []
+
+        # Don't sleep on the first attempt, so adding 0 as the first item
+        for delay in [0, *bulk_retry_delays(max_retries)]:
             sleep(delay)
-            failures = self._send_bulk(
-                [item for item, _ in failures], max_bytes, action, summary
+            failures = self._send_bulk(pending, max_bytes, action, summary)
+
+            transient_failures = []
+            for item, error in failures:
+                if is_transient_failure(error):
+                    transient_failures.append((item, error))
+                else:
+                    permanent_failures.append((item, error))
+
+            if not transient_failures:  # there is nothing to retry anymore
+                break
+
+            pending = [item for item, _ in transient_failures]
+
+        failures = permanent_failures + transient_failures
+
+        summary["failed"] = len(failures)
+        summary["failures"] = [
+            {**info, "document": item.document} for item, info in failures
+        ]
+
+        if failures:
+            return Failure(
+                f"{len(failures)} of {total} documents failed to index", data=summary
             )
-        failures.extend(permanent_failures)
-
-        for item, info in failures:
-            summary["failed"] += 1
-            summary["failures"].append({**info, "document": item.document})
-
-        if summary["failed"]:
-            reason = f"{summary['failed']} of {total} documents failed to index"
-            return Failure(reason, data=summary)
         return Success(summary)
 
     def index_document(

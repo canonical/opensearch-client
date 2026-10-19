@@ -185,27 +185,19 @@ def test_bulk_halves_a_batch_on_413_and_indexes_the_halves() -> None:
     assert res and res.data["indexed"] == 2 and transport.calls == 3
 
 
-def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
-    transport = _SeqTransport(
-        Failure("503 unavailable", status=503)
-    )  # every attempt fails
-    with _recorded_delays():
-        res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
-    assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries
-
-
 def test_bulk_waits_longer_before_each_retry_up_to_a_minute() -> None:
     down = Failure("503 unavailable", status=503)
     ok = Success({"items": [{"index": {"status": 201}}]})
 
-    # Every attempt fails: one wait before each of the eight retries, doubling
-    # from a second and capped at a minute, and none after the last attempt.
+    # Every attempt fails: no wait before the first attempt, one wait before each
+    # of the eight retries, doubling from a second and capped at a minute, and
+    # none after the last attempt.
     transport = _SeqTransport(down)
     with _recorded_delays() as delays:
         result = OpensearchClient(transport).bulk([{"a": 1}], max_retries=8)
     assert not result
     assert transport.calls == 9
-    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+    assert delays == [0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
 
     # The waiting stops as soon as a retry succeeds.
     transport = _SeqTransport(down, down, ok)
@@ -213,7 +205,7 @@ def test_bulk_waits_longer_before_each_retry_up_to_a_minute() -> None:
         result = OpensearchClient(transport).bulk([{"a": 1}], max_retries=8)
     assert result
     assert transport.calls == 3
-    assert delays == [1.0, 2.0]
+    assert delays == [0, 1.0, 2.0]
 
 
 def test_bulk_retries_only_transient_failures() -> None:
@@ -250,7 +242,7 @@ def test_bulk_retries_only_transient_failures() -> None:
         assert not result, label
         assert result.data["failed"] == 1, label
         assert transport.calls == (3 if retried else 1), label
-        assert delays == ([1.0, 2.0] if retried else []), label
+        assert delays == ([0, 1.0, 2.0] if retried else [0]), label
 
 
 def test_bulk_resends_only_the_transient_document_of_a_mixed_batch() -> None:

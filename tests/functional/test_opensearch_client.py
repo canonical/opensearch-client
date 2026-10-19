@@ -256,19 +256,19 @@ def test_bulk_reports_rejected_documents_and_retries_only_transient_ones() -> No
             permanent = _client.bulk([{"n": "not-an-int"}], index=index, max_retries=3)
         assert not permanent
         assert permanent.data["batches"] == 1
-        assert not recorder.delays
+        assert recorder.delays == [0]
 
         # A write-blocked index fails every item with a 403 cluster_block_exception.
         # The status alone looks permanent, but the error type marks it transient
         # (the block can be lifted), so bulk retries, doubling the delay up to a
         # minute. The block is lifted before the last retry, which then succeeds.
         _block_writes(index, True)
-        recorder = _SleepRecorder(index, unblock_on_call=8)
+        recorder = _SleepRecorder(index, unblock_on_call=9)
         with _sleep_replaced(recorder):
             recovered = _client.bulk([{"n": 4}], index=index, max_retries=8)
         assert recovered, recovered.reason
         assert recovered.data["batches"] == 9  # the first send and eight retries
-        assert recorder.delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+        assert recorder.delays == [0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
 
         # Two documents from the first call, and the retried one written once.
         assert _client.refresh(index=index).ok
