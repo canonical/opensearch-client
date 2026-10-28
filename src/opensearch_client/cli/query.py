@@ -17,6 +17,7 @@ opensearch_client.config) so the password never lands in shell history.
 
 import json
 import logging
+import os
 import sys
 from argparse import Namespace, _SubParsersAction
 from typing import Any
@@ -84,6 +85,10 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
         "--count-only",
         action="store_true",
         help="route to _count and print only the number of matching documents",
+    )
+    dsl.add_argument(
+        "--index",
+        help="index or pattern to search (default: OPENSEARCH_INDEX)",
     )
     add_time_range_arguments(dsl)
     add_format_argument(dsl)
@@ -176,13 +181,17 @@ def _run_dsl(client: OpensearchClient, args: Namespace) -> None:
     """Run the 'query dsl' CLI command."""
     parsed = _parse_dsl(resolve_source(args.query))
     time_filter = time_range_filter(args)
+    idx = args.index if args.index else os.environ.get("OPENSEARCH_INDEX")
+    if not idx:
+        logging.error("Either --index or OPENSEARCH_INDEX must be specified")
+        raise SystemExit(2)
     if args.count_only:
         query = _with_time_filter(_query_from_dsl(parsed), time_filter)
-        emit(diagnose(client.count(query)), "Count", args.format)
+        emit(diagnose(client.count(query, idx)), "Count", args.format)
     else:
         body = _search_body_from_dsl(parsed)
         body["query"] = _with_time_filter(body["query"], time_filter)
-        emit(diagnose(client.search(body)), "DSL query", args.format)
+        emit(diagnose(client.search(body, idx)), "DSL query", args.format)
 
 
 def run(args: Namespace, client: OpensearchClient) -> None:

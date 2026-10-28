@@ -36,7 +36,7 @@ import sys
 
 import requests
 
-from opensearch_client.client import DEFAULT_INDEX, OpensearchClient
+from opensearch_client.client import OpensearchClient
 from opensearch_client.transport import (
     DirectTransport,
     FailoverTransport,

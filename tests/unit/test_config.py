@@ -113,7 +113,3 @@ def test_returns_none_without_credentials_or_endpoint() -> None:
         assert client_from_env() is None
     with env(**_CREDS):  # credentials but no endpoint
         assert client_from_env() is None
-
-
-def test_index_defaults_to_star_when_unset() -> None:
-    assert _built(OPENSEARCH_URL="https://h:9200").default_index == "*"
