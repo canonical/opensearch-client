@@ -11,8 +11,6 @@ from opensearch_client.jdbc import rows_from_sql_response
 from opensearch_client.result import Failure, OpensearchResult, Success
 from opensearch_client.transport import REQUEST_TIMEOUT, Transport
 
-DEFAULT_INDEX = "*"
-
 # Default byte ceiling for one _bulk request body; batches are packed under it.
 BULK_MAX_BYTES = 10_000_000
 
@@ -118,24 +116,16 @@ class OpensearchClient:
     and hands the bytes to the transport; :meth:`bulk` encodes newline-delimited
     JSON and sends it the same way. Each helper returns an
     :class:`~opensearch_client.result.OpensearchResult`.
-
-    Index-scoped helpers (``search``, ``count``, ``create_index``, ...) target
-    :attr:`default_index` unless an explicit ``index`` argument is given.
     """
 
-    def __init__(
-        self, transport: Transport, default_index: str = DEFAULT_INDEX
-    ) -> None:
+    def __init__(self, transport: Transport) -> None:
         """Initialize the client.
 
         Args:
             transport (Transport): how requests reach the cluster (direct, proxy,
                 probe, or failover).
-            default_index (str): the index pattern index-scoped helpers target when
-                no explicit ``index`` is passed, e.g. ``logs-*``.
         """
         self._transport = transport
-        self.default_index = default_index
 
     # -- core -------------------------------------------------------------
 
@@ -176,29 +166,25 @@ class OpensearchClient:
     # -- reads ------------------------------------------------------------
 
     def search_raw(
-        self, query: dict[str, Any], index: str | None = None
+        self, query: dict[str, Any], index: str
     ) -> OpensearchResult[dict[str, Any]]:
         """Run a search and return the full response (hits, aggregations, ...).
 
         Args:
             query (dict[str, Any]): the search body.
-            index (str | None): the index or pattern to search; defaults to
-                ``default_index``.
+            index (str): the index or pattern to search.
 
         Returns:
             The full search response, or a failure.
         """
-        return self.request("POST", f"{index or self.default_index}/_search", query)
+        return self.request("POST", f"{index}/_search", query)
 
-    def search(
-        self, query: dict[str, Any], index: str | None = None
-    ) -> OpensearchResult:
+    def search(self, query: dict[str, Any], index: str) -> OpensearchResult:
         """Run a search against the index, returning each hit's ``_source``.
 
         Args:
             query (dict[str, Any]): the search body.
-            index (str | None): the index or pattern to search; defaults to
-                ``default_index``.
+            index (str): the index or pattern to search.
 
         Returns:
             The ``_source`` of each hit, or a failure.
@@ -209,22 +195,17 @@ class OpensearchClient:
         hits = res.data.get("hits", {}).get("hits", [])
         return Success([hit.get("_source", {}) for hit in hits])
 
-    def count(
-        self, query: dict[str, Any], index: str | None = None
-    ) -> OpensearchResult[int]:
+    def count(self, query: dict[str, Any], index: str) -> OpensearchResult[int]:
         """Count documents matching a DSL query via the ``_count`` API.
 
         Args:
             query (dict[str, Any]): the query DSL.
-            index (str | None): the index or pattern to count in; defaults to
-                ``default_index``.
+            index (str): the index or pattern to count in.
 
         Returns:
             The number of matching documents, or a failure.
         """
-        res = self.request(
-            "POST", f"{index or self.default_index}/_count", {"query": query}
-        )
+        res = self.request("POST", f"{index}/_count", {"query": query})
         if not res:
             return res
         return Success(res.data.get("count", 0))
@@ -295,21 +276,18 @@ class OpensearchClient:
             "POST", f"_plugins/_{query_type}/_explain", {"query": query}
         )
 
-    def get_mapping(self, index: str | None = None) -> OpensearchResult[dict[str, Any]]:
+    def get_mapping(self, index: str) -> OpensearchResult[dict[str, Any]]:
         """Return the full mapping for the index (or pattern).
 
         Args:
-            index (str | None): the index or pattern to inspect; defaults to
-                ``default_index``.
+            index (str): the index or pattern to inspect.
 
         Returns:
             The mapping, or a failure.
         """
-        return self.request("GET", f"{index or self.default_index}/_mapping")
+        return self.request("GET", f"{index}/_mapping")
 
-    def field_mapping(
-        self, field: str, index: str | None = None
-    ) -> OpensearchResult[Any]:
+    def field_mapping(self, field: str, index: str) -> OpensearchResult[Any]:
         """Return the mapping for one or more fields (wildcards allowed) on the index.
 
         An empty ``mappings`` for an index means the field is not mapped there, and
@@ -318,15 +296,19 @@ class OpensearchClient:
 
         Args:
             field (str): the field name, or comma-separated names; wildcards allowed.
-            index (str | None): the index or pattern to inspect; defaults to
-                ``default_index``.
+            index (str): the index or pattern to inspect.
 
         Returns:
             The field mappings, or a failure.
         """
-        return self.request(
-            "GET", f"{index or self.default_index}/_mapping/field/{field}"
-        )
+        return self.request("GET", f"{index}/_mapping/field/{field}")
+
+    def health(self) -> OpensearchResult[dict[str, Any]]:
+        """Get the cluster health status."""
+        res = self.get("_cluster/health")
+        if res.ok:
+            return Success(res.data)
+        return res
 
     def opensearch_version(self) -> OpensearchResult[list[str]]:
         """Return the distinct OpenSearch versions running across the nodes.
@@ -390,7 +372,7 @@ class OpensearchClient:
     def bulk(
         self,
         documents: Iterable[dict[str, Any]],
-        index: str | None = None,
+        index: str,
         *,
         action: str = "index",
         max_bytes: int = BULK_MAX_BYTES,
@@ -407,7 +389,7 @@ class OpensearchClient:
 
         Args:
             documents (Iterable[dict[str, Any]]): the documents to index.
-            index (str | None): the index to write to; defaults to ``default_index``.
+            index (str): the index to write to.
             action (str): the bulk action, e.g. ``index`` or ``create``.
             max_bytes (int): the largest request body, in bytes.
             max_retries (int): how many times to resend transiently failed documents.
@@ -419,7 +401,7 @@ class OpensearchClient:
             document was indexed; if any failed, it is a ``Failure`` whose
             ``data`` still carries the same summary for inspection.
         """
-        idx = index or self.default_index
+        idx = index
         pending = [BulkItem.build(action, idx, doc) for doc in documents]
         total = len(pending)
         summary: dict[str, Any] = {
@@ -449,7 +431,7 @@ class OpensearchClient:
     def index_document(
         self,
         document: dict[str, Any],
-        index: str | None = None,
+        index: str,
         *,
         doc_id: str | None = None,
         refresh: bool = False,
@@ -462,38 +444,37 @@ class OpensearchClient:
 
         Args:
             document (dict[str, Any]): the document source.
-            index (str | None): the index to write to; defaults to ``default_index``.
+            index (str): the index to write to.
             doc_id (str | None): the document id, or None to let OpenSearch assign one.
             refresh (bool): whether to make the document immediately searchable.
 
         Returns:
             The index response, or a failure.
         """
-        idx = index or self.default_index
         if doc_id is not None:
-            method, path = "PUT", f"{idx}/_doc/{doc_id}"
+            method, path = "PUT", f"{index}/_doc/{doc_id}"
         else:
-            method, path = "POST", f"{idx}/_doc"
+            method, path = "POST", f"{index}/_doc"
         if refresh:
             path += "?refresh=true"
         return self.request(method, path, document)
 
     def create_index(
-        self, body: dict[str, Any], index: str | None = None
+        self, body: dict[str, Any], index: str
     ) -> OpensearchResult[dict[str, Any]]:
         """Create an index with the given settings/mappings body (``PUT <index>``).
 
         Args:
             body (dict[str, Any]): the settings and mappings.
-            index (str | None): the index to create; defaults to ``default_index``.
+            index (str): the index to create.
 
         Returns:
             The create acknowledgement, or a failure.
         """
-        return self.request("PUT", index or self.default_index, body)
+        return self.request("PUT", index, body)
 
     def put_mapping(
-        self, mapping: dict[str, Any], index: str | None = None
+        self, mapping: dict[str, Any], index: str
     ) -> OpensearchResult[dict[str, Any]]:
         """Add or update field mappings on an existing index (``PUT <index>/_mapping``).
 
@@ -509,7 +490,7 @@ class OpensearchClient:
         Returns:
             The put-mapping acknowledgement.
         """
-        return self.request("PUT", f"{index or self.default_index}/_mapping", mapping)
+        return self.request("PUT", f"{index}/_mapping", mapping)
 
     def get_pipeline(self, name: str | None = None) -> OpensearchResult[dict[str, Any]]:
         """Get ingest pipelines: all of them, or one by name.
@@ -595,7 +576,7 @@ class OpensearchClient:
         """Delete a component template."""
         return self.request("DELETE", f"_component_template/{name}")
 
-    def refresh(self, index: str | None = None) -> OpensearchResult[dict[str, Any]]:
+    def refresh(self, index: str) -> OpensearchResult[dict[str, Any]]:
         """Refresh an index so its recent writes become searchable.
 
         Args:
@@ -605,7 +586,7 @@ class OpensearchClient:
         Returns:
             The ``_refresh`` response (per-shard success counts).
         """
-        return self.request("POST", f"{index or self.default_index}/_refresh")
+        return self.request("POST", f"{index}/_refresh")
 
     def delete_index(self, index: str) -> OpensearchResult[dict[str, Any]]:
         """Delete an index.
@@ -639,25 +620,24 @@ class OpensearchClient:
         return res
 
     def ensure_index(
-        self, index: str | None = None, body: dict[str, Any] | None = None
+        self, index: str, body: dict[str, Any] | None = None
     ) -> OpensearchResult[bool]:
         """Create the index if it does not exist yet.
 
         Args:
-            index: the index to check or create; defaults to ``default_index``.
+            index: the index to check or create.
             body: the settings and mappings to create the index with, if needed.
 
         Returns:
             True if the index was created, False if it already existed, or the
             failure of the existence check or of the creation.
         """
-        name = index or self.default_index
-        exists_result = self.index_exists(name)
+        exists_result = self.index_exists(index)
         if not exists_result:
             return exists_result
         if exists_result.data:
             return Success(False)
-        create_result = self.create_index(body or {}, name)
+        create_result = self.create_index(body or {}, index)
         if not create_result:
             error_body = create_result.data
             error = error_body.get("error") if isinstance(error_body, dict) else None
@@ -751,7 +731,7 @@ class OpensearchClient:
     def update_by_query(
         self,
         query: dict[str, Any],
-        index: str | None = None,
+        index: str,
         *,
         script: dict[str, Any] | None = None,
         conflicts: str | None = None,
@@ -768,7 +748,7 @@ class OpensearchClient:
 
         Args:
             query (dict[str, Any]): the query DSL selecting the documents.
-            index (str | None): the index to update; defaults to ``default_index``.
+            index (str): the index to update.
             script (dict[str, Any] | None): a script that transforms each matched
                 document.
             conflicts (str | None): ``proceed`` to continue past version conflicts.
@@ -787,7 +767,7 @@ class OpensearchClient:
             params["conflicts"] = conflicts
         params["wait_for_completion"] = wait_for_completion
         params["refresh"] = refresh
-        path = f"{index or self.default_index}/_update_by_query" + _query_string(params)
+        path = f"{index}/_update_by_query" + _query_string(params)
         return self.request("POST", path, body, timeout)
 
     def get_task(self, task_id: str) -> OpensearchResult[dict[str, Any]]:

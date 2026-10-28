@@ -7,7 +7,6 @@ import json
 from typing import Any
 
 from opensearch_client.client import (
-    DEFAULT_INDEX,
     BulkItem,
     OpensearchClient,
     _pack_batches,
@@ -58,23 +57,9 @@ def test_request_delegates_to_the_transport() -> None:
     assert json.loads(body) == {"b": 2}  # the client JSON-encodes before the transport
 
 
-def test_default_index_is_used_and_can_be_overridden() -> None:
-    assert (
-        OpensearchClient(FakeTransport(Success({}))).default_index
-        == DEFAULT_INDEX
-        == "*"
-    )
-    transport = FakeTransport(Success({"hits": {"hits": []}}))
-    client = OpensearchClient(transport, default_index="logs-*")
-    client.search({"q": 1})
-    client.search({"q": 1}, index="other-*")
-    assert transport.calls[0][1] == "logs-*/_search"
-    assert transport.calls[1][1] == "other-*/_search"
-
-
 def test_search_extracts_each_hit_source() -> None:
     hits = {"hits": {"hits": [{"_source": {"a": 1}}, {"_source": {"a": 2}}]}}
-    res = OpensearchClient(FakeTransport(Success(hits))).search({"q": 1})
+    res = OpensearchClient(FakeTransport(Success(hits))).search({"q": 1}, "*")
     assert res.data == [{"a": 1}, {"a": 2}]
 
 
@@ -97,7 +82,7 @@ def test_version_helpers_process_cat_output() -> None:
 
 
 def test_read_helpers_propagate_a_failed_request() -> None:
-    res = OpensearchClient(FakeTransport(Failure("500 boom"))).search({"q": 1})
+    res = OpensearchClient(FakeTransport(Failure("500 boom"))).search({"q": 1}, "*")
     assert not res
     assert "500" in res.reason
 
@@ -148,7 +133,7 @@ def test_pack_batches_bounds_by_bytes() -> None:
 def test_bulk_halves_a_batch_on_413_and_indexes_the_halves() -> None:
     ok = Success({"items": [{"index": {"status": 201}}]})
     transport = _SeqTransport(Failure("413", status=413), ok, ok)
-    res = OpensearchClient(transport).bulk([{"a": 1}, {"a": 2}])
+    res = OpensearchClient(transport).bulk([{"a": 1}, {"a": 2}], "*")
     assert res and res.data["indexed"] == 2 and transport.calls == 3
 
 
@@ -156,5 +141,5 @@ def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
     transport = _SeqTransport(
         Failure("503 unavailable", status=503)
     )  # every attempt fails
-    res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
+    res = OpensearchClient(transport).bulk([{"a": 1}], "*", max_retries=2)
     assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries

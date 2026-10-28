@@ -54,7 +54,7 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     )
     parser.add_argument(
         "--index",
-        help="index or pattern to search (default: the configured OPENSEARCH_INDEX)",
+        help="index or pattern to search (default: OPENSEARCH_INDEX)",
     )
     add_time_range_arguments(parser)
     add_format_argument(parser)
@@ -92,7 +92,7 @@ def build_term_search(terms: list[tuple[str, list[str]]], size: int) -> dict[str
 
 
 def _unmapped_fields(
-    client: OpensearchClient, fields: list[str], index: str | None
+    client: OpensearchClient, fields: list[str], index: str
 ) -> list[str]:
     """Return the term fields that are absent from the index mapping.
 
@@ -103,8 +103,7 @@ def _unmapped_fields(
     Args:
         client (OpensearchClient): used to look up each field's mapping.
         fields (list[str]): the term field names to check.
-        index (str | None): index or pattern to check the mapping in (None uses the
-            default).
+        index (str): index or pattern to check the mapping in.
 
     Returns:
         The subset of ``fields`` that are confidently unmapped.

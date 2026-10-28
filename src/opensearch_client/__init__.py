@@ -11,7 +11,7 @@ and, to ship log records to an index, ``OpensearchLogHandler``, optionally with
 ``ECSLogFormatter`` and ``ECSLogContextFilter`` for ECS documents.
 """
 
-from opensearch_client.client import DEFAULT_INDEX, OpensearchClient
+from opensearch_client.client import OpensearchClient
 from opensearch_client.config import client_from_env
 from opensearch_client.log_handler import (
     ECSLogContextFilter,
@@ -34,7 +34,6 @@ __all__ = [
     "OpensearchResult",
     "Success",
     "Failure",
-    "DEFAULT_INDEX",
     "client_from_env",
     "DirectTransport",
     "ProxyTransport",
