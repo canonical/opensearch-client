@@ -31,7 +31,6 @@ Other variables:
     OPENSEARCH_INDEX      index pattern the query helpers target (default ``*``)
 """
 
-import logging
 import os
 import sys
 
@@ -79,23 +78,6 @@ def _endpoint(
     if host:
         return f"https://{host}:{os.environ.get(port_var, default_port)}"
     return None
-
-
-def _index() -> str:
-    """Get the configured index pattern, or the default ``*`` with a warning.
-
-    Returns:
-        The ``OPENSEARCH_INDEX`` value, or ``*`` if it is unset.
-    """
-    index = os.environ.get("OPENSEARCH_INDEX")
-    if index:
-        return index
-    logging.warning(
-        "no OPENSEARCH_INDEX set; defaulting to '%s' (all indices). Prefer an "
-        "explicit index pattern.",
-        DEFAULT_INDEX,
-    )
-    return DEFAULT_INDEX
 
 
 def client_from_env(insecure: bool = False) -> OpensearchClient | None:
@@ -165,4 +147,4 @@ def client_from_env(insecure: bool = False) -> OpensearchClient | None:
         )
         return None
 
-    return OpensearchClient(transport, _index())
+    return OpensearchClient(transport)
