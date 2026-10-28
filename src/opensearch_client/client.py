@@ -303,6 +303,13 @@ class OpensearchClient:
         """
         return self.request("GET", f"{index}/_mapping/field/{field}")
 
+    def health(self) -> OpensearchResult[dict[str, Any]]:
+        """Get the cluster health status."""
+        res = self.get("_cluster/health")
+        if res.ok:
+            return Success(res.data)
+        return res
+
     def opensearch_version(self) -> OpensearchResult[list[str]]:
         """Return the distinct OpenSearch versions running across the nodes.
 

@@ -33,6 +33,9 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     )
     operations = parser.add_subparsers(dest="operation", required=True)
 
+    health = operations.add_parser("health", help="show OpenSearch health status")
+    add_format_argument(health)
+
     versions = operations.add_parser(
         "versions", help="show OpenSearch and installed-plugin versions"
     )
@@ -217,6 +220,12 @@ def run(  # noqa: PLR0912, PLR0915  # dispatcher: one branch per operation
         args (Namespace): the parsed command-line arguments.
         client (OpensearchClient): the client to run the operation with.
     """
+    if args.operation == "health":
+        health = client.health()
+        if health.ok:
+            print(render(health.data, args.format))
+        else:
+            logging.error("Failed: %s", health.reason)
     if args.operation == "versions":
         print(render(get_versions(client), args.format))
     elif args.operation == "pipeline":
