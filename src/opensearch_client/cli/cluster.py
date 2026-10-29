@@ -21,7 +21,9 @@ from opensearch_client.client import OpensearchClient
 NAME = "cluster"
 
 
-def add_subparser(subparsers: _SubParsersAction) -> None:
+def add_subparser(  # noqa: PLR0915  # ignore too many statements
+    subparsers: _SubParsersAction,
+) -> None:
     """Register ``cluster`` and its inspection verbs.
 
     Args:
@@ -232,7 +234,7 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     return versions
 
 
-def run(  # noqa: PLR0912, PLR0915  # dispatcher: one branch per operation
+def run(  # noqa: PLR0912, PLR0915  # ignore too many branches and too many statements
     args: Namespace, client: OpensearchClient
 ) -> None:
     """Run the chosen operation against the client.
@@ -334,14 +336,14 @@ def run(  # noqa: PLR0912, PLR0915  # dispatcher: one branch per operation
         # Replacing a policy needs the sequence numbers it was last written with.
         read_result = client.get_ism_policy(args.policy_id)
         if read_result:
-            result = client.put_ism_policy(
+            result = client.set_ism_policy(
                 args.policy_id,
                 body,
                 seq_no=read_result.data["_seq_no"],
                 primary_term=read_result.data["_primary_term"],
             )
         elif read_result.status == 404:
-            result = client.put_ism_policy(args.policy_id, body)
+            result = client.set_ism_policy(args.policy_id, body)
         else:
             result = read_result
         emit(diagnose(result), "Set ISM policy", args.format)

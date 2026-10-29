@@ -4,32 +4,11 @@
 """Unit tests for opensearch_client.cli.cluster."""
 
 import json
-from typing import Any
 
 import yaml
 from helpers import RecordingTransport, run_cli
 
 from opensearch_client.cli import cluster
-from opensearch_client.result import Failure, OpensearchResult, Success
-
-
-class QueuedTransport:
-    """Records each request and answers them with the queued results, in order."""
-
-    def __init__(self, *results: OpensearchResult[Any]) -> None:
-        self.results = list(results)
-        self.calls: list[tuple[str, str]] = []
-
-    def request(
-        self,
-        method: str,
-        path: str,
-        body: bytes | None = None,
-        content_type: str = "application/json",
-        timeout: int = 30,
-    ) -> OpensearchResult[Any]:
-        self.calls.append((method, path))
-        return self.results.pop(0)
 
 
 def test_delete_template_dry_run_reports_patterns_without_deleting() -> None:
@@ -75,22 +54,13 @@ def test_delete_refuses_a_name_that_could_match_several_templates() -> None:
             assert transport.calls == [], (target, name)
 
 
-def test_set_ism_policy_creates_a_missing_policy() -> None:
-    transport = QueuedTransport(Failure("not found", status=404), Success({}))
-    policy = json.dumps({"policy": {"states": []}})
-    run_cli(cluster, "cluster", ["set", "ism-policy", "p", policy], transport)
-    assert transport.calls == [
-        ("GET", "_plugins/_ism/policies/p"),
-        ("PUT", "_plugins/_ism/policies/p"),
-    ]
-
-
 def test_set_ism_policy_replaces_an_existing_policy_with_its_sequence_numbers() -> None:
-    read = Success({"_id": "p", "_seq_no": 7, "_primary_term": 2, "policy": {}})
-    transport = QueuedTransport(read, Success({}))
-    policy = json.dumps({"policy": {"states": []}})
-    run_cli(cluster, "cluster", ["set", "ism-policy", "p", policy], transport)
+    # The same answer serves the read (which finds the policy) and the write.
+    transport = RecordingTransport({"_seq_no": 7, "_primary_term": 2, "policy": {}})
+    policy = {"policy": {"states": []}}
+    argv = ["set", "ism-policy", "p", json.dumps(policy)]
+    run_cli(cluster, "cluster", argv, transport)
     assert transport.calls == [
-        ("GET", "_plugins/_ism/policies/p"),
-        ("PUT", "_plugins/_ism/policies/p?if_seq_no=7&if_primary_term=2"),
+        ("GET", "_plugins/_ism/policies/p", None),
+        ("PUT", "_plugins/_ism/policies/p?if_seq_no=7&if_primary_term=2", policy),
     ]
