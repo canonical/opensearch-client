@@ -1,0 +1,28 @@
+name: OpenSearch checks
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  opensearch-functional:
+    name: OpenSearch functional tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Install tox
+        run: |
+          sudo apt install -y pipx
+          pipx install tox
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Run OpenSearch functional tests
+        run: bash tests/functional/run.sh

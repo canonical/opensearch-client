@@ -17,6 +17,7 @@ opensearch_client.config) so the password never lands in shell history.
 
 import json
 import logging
+import os
 import sys
 from argparse import Namespace, _SubParsersAction
 from typing import Any
@@ -41,7 +42,12 @@ _SOURCE_EPILOG = (
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register ``query`` and its sql/ppl/dsl language verbs."""
+    """Register ``query`` and its sql/ppl/dsl language verbs.
+
+    Args:
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
+    """
     parser = subparsers.add_parser(NAME, help="run a query (SQL, PPL, or raw DSL)")
     languages = parser.add_subparsers(dest="language", required=True)
 
@@ -80,6 +86,10 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
         action="store_true",
         help="route to _count and print only the number of matching documents",
     )
+    dsl.add_argument(
+        "--index",
+        help="index or pattern to search (default: OPENSEARCH_INDEX)",
+    )
     add_time_range_arguments(dsl)
     add_format_argument(dsl)
 
@@ -89,7 +99,7 @@ def _parse_dsl(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        logging.error(f"query dsl is not valid JSON: {error}")
+        logging.error("query dsl is not valid JSON: %s", error)
         sys.exit(2)
     if not isinstance(parsed, dict):
         logging.error(
@@ -100,13 +110,19 @@ def _parse_dsl(text: str) -> dict[str, Any]:
 
 
 def _search_body_from_dsl(parsed: dict[str, Any]) -> dict[str, Any]:
-    """A _search body from parsed DSL: used as-is if it already has a top-level
-    ``query``, otherwise wrapped so the object is treated as the query."""
+    """Build a _search body from parsed DSL.
+
+    The DSL is used as-is if it already has a top-level ``query``, otherwise it is
+    wrapped so the object is treated as the query.
+    """
     return parsed if "query" in parsed else {"query": parsed}
 
 
 def _query_from_dsl(parsed: dict[str, Any]) -> dict[str, Any]:
-    """The bare query DSL for _count: the ``query`` of a full body, else the object itself."""
+    """Get the bare query DSL for _count from parsed DSL.
+
+    This is the ``query`` of a full body, else the object itself.
+    """
     return parsed["query"] if "query" in parsed else parsed
 
 
@@ -139,6 +155,7 @@ def _ppl_with_time(ppl: str, args: Namespace) -> str:
 
 
 def _run_sql(client: OpensearchClient, args: Namespace) -> None:
+    """Run the 'query sql' CLI command."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -149,6 +166,7 @@ def _run_sql(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
+    """Run the 'query ppl' CLI command."""
     text = resolve_source(args.query)
     if args.explain:
         _reject_time_with_explain(args)
@@ -160,19 +178,29 @@ def _run_ppl(client: OpensearchClient, args: Namespace) -> None:
 
 
 def _run_dsl(client: OpensearchClient, args: Namespace) -> None:
+    """Run the 'query dsl' CLI command."""
     parsed = _parse_dsl(resolve_source(args.query))
     time_filter = time_range_filter(args)
+    idx = args.index if args.index else os.environ.get("OPENSEARCH_INDEX")
+    if not idx:
+        logging.error("Either --index or OPENSEARCH_INDEX must be specified")
+        raise SystemExit(2)
     if args.count_only:
         query = _with_time_filter(_query_from_dsl(parsed), time_filter)
-        emit(diagnose(client.count(query)), "Count", args.format)
+        emit(diagnose(client.count(query, idx)), "Count", args.format)
     else:
         body = _search_body_from_dsl(parsed)
         body["query"] = _with_time_filter(body["query"], time_filter)
-        emit(diagnose(client.search(body)), "DSL query", args.format)
+        emit(diagnose(client.search(body, idx)), "DSL query", args.format)
 
 
 def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the chosen language verb against the client."""
+    """Run the chosen language verb against the client.
+
+    Args:
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the verb with.
+    """
     if args.language == "sql":
         _run_sql(client, args)
     elif args.language == "ppl":

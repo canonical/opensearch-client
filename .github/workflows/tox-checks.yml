@@ -1,0 +1,49 @@
+name: Tox checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tox-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tox:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lint checks
+            tox-args: -e lint
+          - name: type checks
+            tox-args: -e type
+          - name: hygiene checks
+            tox-args: -e hygiene
+          - name: doc checks
+            tox-args: -e doc-checks
+          - name: Canonical vale checks
+            tox-args: -e vale
+          - name: actionlint checks
+            tox-args: -e actionlint
+          - name: unit tests
+            tox-args: -f unit
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Install tox
+        run: |
+          sudo apt install -y pipx
+          pipx install tox
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Run tox
+        run: tox run ${{ matrix.tox-args }}

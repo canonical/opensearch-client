@@ -26,7 +26,12 @@ NAME = "search"
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register the ``search`` subcommand."""
+    """Register the ``search`` subcommand.
+
+    Args:
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
+    """
     parser = subparsers.add_parser(
         NAME, help="find the newest documents matching exact FIELD=VALUE terms"
     )
@@ -49,7 +54,7 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     )
     parser.add_argument(
         "--index",
-        help="index or pattern to search (default: the configured OPENSEARCH_INDEX)",
+        help="index or pattern to search (default: OPENSEARCH_INDEX)",
     )
     add_time_range_arguments(parser)
     add_format_argument(parser)
@@ -64,6 +69,14 @@ def build_term_search(terms: list[tuple[str, list[str]]], size: int) -> dict[str
     Results are sorted by ``@timestamp`` descending so we always get the most
     recent ``size`` documents. ``unmapped_type`` keeps the sort from erroring on
     an index in the pattern that lacks the field.
+
+    Args:
+        terms (list[tuple[str, list[str]]]): each field name with the values it may
+            match.
+        size (int): how many documents to return.
+
+    Returns:
+        The ``_search`` body.
     """
     filters: list[dict[str, Any]] = []
     for field, values in terms:
@@ -79,7 +92,7 @@ def build_term_search(terms: list[tuple[str, list[str]]], size: int) -> dict[str
 
 
 def _unmapped_fields(
-    client: OpensearchClient, fields: list[str], index: str | None
+    client: OpensearchClient, fields: list[str], index: str
 ) -> list[str]:
     """Return the term fields that are absent from the index mapping.
 
@@ -88,9 +101,9 @@ def _unmapped_fields(
     read is treated as mapped, so the caller never warns on a guess.
 
     Args:
-        client: used to look up each field's mapping.
-        fields: the term field names to check.
-        index: index or pattern to check the mapping in (None uses the default).
+        client (OpensearchClient): used to look up each field's mapping.
+        fields (list[str]): the term field names to check.
+        index (str): index or pattern to check the mapping in.
 
     Returns:
         The subset of ``fields`` that are confidently unmapped.
@@ -107,11 +120,16 @@ def _unmapped_fields(
 
 
 def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the term search against the client."""
+    """Run the term search against the client.
+
+    Args:
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to search with.
+    """
     terms: list[tuple[str, list[str]]] = []
     for token in args.terms:
         if "=" not in token:
-            logging.error(f"search term must be FIELD=VALUE: {token!r}")
+            logging.error("search term must be FIELD=VALUE: %r", token)
             sys.exit(2)
         field, value = token.split("=", 1)
         terms.append((field, [value]))

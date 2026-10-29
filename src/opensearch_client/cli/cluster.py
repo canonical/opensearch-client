@@ -22,11 +22,19 @@ NAME = "cluster"
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register ``cluster`` and its inspection verbs."""
+    """Register ``cluster`` and its inspection verbs.
+
+    Args:
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
+    """
     parser = subparsers.add_parser(
         NAME, help="cluster-level inspection and resource management"
     )
     operations = parser.add_subparsers(dest="operation", required=True)
+
+    health = operations.add_parser("health", help="show OpenSearch health status")
+    add_format_argument(health)
 
     versions = operations.add_parser(
         "versions", help="show OpenSearch and installed-plugin versions"
@@ -206,6 +214,13 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     SQL and PPL are both provided by the single ``opensearch-sql`` plugin, so its
     version covers both. Each lookup is independent: if one fails its error is
     recorded and the other is still returned.
+
+    Args:
+        client (OpensearchClient): the client to query.
+
+    Returns:
+        The OpenSearch versions and the plugin versions, or an ``error`` entry
+        in place of each lookup that failed.
     """
     versions: dict[str, Any] = {}
     opensearch = client.opensearch_version()
@@ -217,8 +232,21 @@ def get_versions(client: OpensearchClient) -> dict[str, Any]:
     return versions
 
 
-def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the chosen operation against the client."""
+def run(  # noqa: PLR0912, PLR0915  # dispatcher: one branch per operation
+    args: Namespace, client: OpensearchClient
+) -> None:
+    """Run the chosen operation against the client.
+
+    Args:
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the operation with.
+    """
+    if args.operation == "health":
+        health = client.health()
+        if health.ok:
+            print(render(health.data, args.format))
+        else:
+            logging.error("Failed: %s", health.reason)
     if args.operation == "versions":
         print(render(get_versions(client), args.format))
     elif args.operation == "pipeline":

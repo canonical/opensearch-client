@@ -35,7 +35,10 @@ class FakeTransport:
 
 
 class _SeqTransport:
-    """A transport returning queued results in order (the last repeats); counts calls."""
+    """A transport returning queued results in order (the last repeats).
+
+    Counts the calls.
+    """
 
     def __init__(self, *results: OpensearchResult[Any]) -> None:
         self._results = results
@@ -55,23 +58,9 @@ def test_request_delegates_to_the_transport() -> None:
     assert json.loads(body) == {"b": 2}  # the client JSON-encodes before the transport
 
 
-def test_default_index_is_used_and_can_be_overridden() -> None:
-    assert (
-        OpensearchClient(FakeTransport(Success({}))).default_index
-        == DEFAULT_INDEX
-        == "*"
-    )
-    transport = FakeTransport(Success({"hits": {"hits": []}}))
-    client = OpensearchClient(transport, default_index="logs-*")
-    client.search({"q": 1})
-    client.search({"q": 1}, index="other-*")
-    assert transport.calls[0][1] == "logs-*/_search"
-    assert transport.calls[1][1] == "other-*/_search"
-
-
 def test_search_extracts_each_hit_source() -> None:
     hits = {"hits": {"hits": [{"_source": {"a": 1}}, {"_source": {"a": 2}}]}}
-    res = OpensearchClient(FakeTransport(Success(hits))).search({"q": 1})
+    res = OpensearchClient(FakeTransport(Success(hits))).search({"q": 1}, "*")
     assert res.data == [{"a": 1}, {"a": 2}]
 
 
@@ -94,7 +83,7 @@ def test_version_helpers_process_cat_output() -> None:
 
 
 def test_read_helpers_propagate_a_failed_request() -> None:
-    res = OpensearchClient(FakeTransport(Failure("500 boom"))).search({"q": 1})
+    res = OpensearchClient(FakeTransport(Failure("500 boom"))).search({"q": 1}, "*")
     assert not res
     assert "500" in res.reason
 
@@ -105,6 +94,28 @@ def test_index_exists_maps_200_and_404_and_propagates_other_errors() -> None:
     assert missing.index_exists("i").data is False
     err = OpensearchClient(FakeTransport(Failure("auth", status=401))).index_exists("i")
     assert not err and err.status == 401  # a non-404 failure is not "does not exist"
+
+
+def test_ensure_index_creates_a_missing_index_and_reports_failures() -> None:
+    created = Success({"acknowledged": True})
+    missing = Failure("not found", status=404)
+    # (what the cluster answers, whether the call succeeds, data, requests made)
+    cases: list[tuple[str, list[OpensearchResult[Any]], bool, bool | None, int]] = [
+        ("already exists", [Success({})], True, False, 1),
+        ("missing, then created", [missing, created], True, True, 2),
+        ("existence check fails", [Failure("denied", status=401)], False, None, 1),
+        ("creation fails", [missing, Failure("blocked", status=403)], False, None, 2),
+    ]
+
+    for label, answers, succeeds, expected_data, requests in cases:
+        transport = _SeqTransport(*answers)
+        result = OpensearchClient(transport).ensure_index("logs")
+        assert bool(result) is succeeds, label
+        if succeeds:
+            assert result.data is expected_data, label
+        else:
+            assert result.status in (401, 403), label
+        assert transport.calls == requests, label
 
 
 def test_list_indices_extracts_and_sorts_names() -> None:
@@ -123,7 +134,7 @@ def test_pack_batches_bounds_by_bytes() -> None:
 def test_bulk_halves_a_batch_on_413_and_indexes_the_halves() -> None:
     ok = Success({"items": [{"index": {"status": 201}}]})
     transport = _SeqTransport(Failure("413", status=413), ok, ok)
-    res = OpensearchClient(transport).bulk([{"a": 1}, {"a": 2}])
+    res = OpensearchClient(transport).bulk([{"a": 1}, {"a": 2}], "*")
     assert res and res.data["indexed"] == 2 and transport.calls == 3
 
 
@@ -131,7 +142,7 @@ def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
     transport = _SeqTransport(
         Failure("503 unavailable", status=503)
     )  # every attempt fails
-    res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
+    res = OpensearchClient(transport).bulk([{"a": 1}], "*", max_retries=2)
     assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries
 
 

@@ -17,6 +17,7 @@ _COMMANDS = (query, search, index, cluster, triage_cmd)
 
 
 def main() -> None:
+    """Parse the command line and run the chosen subcommand."""
     parser = ArgumentParser(prog="os-cli", description="Query an OpenSearch cluster.")
     parser.add_argument(
         "--insecure",

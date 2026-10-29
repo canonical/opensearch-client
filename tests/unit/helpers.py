@@ -38,7 +38,7 @@ class RecordingTransport:
 def run_cli(
     module: ModuleType, command: str, argv: list[str], transport: Transport
 ) -> str:
-    """Parse argv as an ``opensearch_client <command>`` command, run it, return stdout."""
+    """Parse argv as an ``os-cli <command>`` command, run it, return stdout."""
     parser = ArgumentParser()
     module.add_subparser(parser.add_subparsers(dest="subcommand"))
     args = parser.parse_args([command, *argv])

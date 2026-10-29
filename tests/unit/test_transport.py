@@ -60,8 +60,9 @@ class FakeSession:
 
 
 def _stub(transport: Any, response: Any) -> FakeSession:
-    transport.session = FakeSession(response)
-    return transport.session
+    session = FakeSession(response)
+    transport.session = session
+    return session
 
 
 def test_direct_transport_builds_the_rest_request() -> None:
@@ -154,7 +155,7 @@ def test_failover_retries_only_on_a_transport_error() -> None:
     # An HTTP error is a real answer -> returned as-is, proxy untouched.
     ft, fs = _failover(FakeResponse(500, None, text="boom"), FakeResponse(200, {}))
     res = ft.request("GET", "x")
-    assert not res and "500" in res.reason and fs.calls == []
+    assert not res and "500" in res.reason and not fs.calls
     # Both unreachable -> both reasons reported.
     ft, _ = _failover(requests.ConnectionError("d"), requests.ConnectionError("p"))
     res = ft.request("GET", "x")
@@ -175,7 +176,7 @@ def test_probe_caches_the_answering_transport() -> None:
     assert (
         pt.request("GET", "x").data == pt.request("GET", "x").data == {"via": "direct"}
     )
-    assert len(ds.calls) == 2 and ps.calls == []
+    assert len(ds.calls) == 2 and not ps.calls
     # Direct fails (dashboard 404) -> proxy used and cached (direct tried once).
     pt, ds, ps = _probe(
         FakeResponse(404, None, text="no"), FakeResponse(200, {"via": "proxy"})

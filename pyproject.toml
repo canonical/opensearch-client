@@ -14,10 +14,7 @@ name = "opensearch_client"
 version = "0.1.2"
 description = "OpenSearch client library."
 requires-python = ">=3.10"
-dependencies = [
-    "requests",
-    "PyYAML",
-]
+dependencies = ["requests", "PyYAML"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -34,60 +31,165 @@ packages = ["src/opensearch_client"]
 #######################################
 
 [tool.tox]
-requires = ["tox>=4.57"]
-env_list = ["lint", "type", "unit"]
+requires = ["tox>=4.57", "tox-uv>=1.0.0"]
+env_list = [
+  "lint",
+  "type",
+  "hygiene",
+  "doc-checks",
+  "vale",
+  "actionlint",
+  # 22.04 -> py310 | 24.04 -> py312 | 26.04 -> py314
+  "unit-py310",
+  "unit-py312",
+  "unit-py314",
+]
+
+[tool.tox.env_run_base]
+package = "wheel"
+recreate = true
+set_env = { PYTHONPATH = "{tox_root}/src" }
 
 [tool.tox.env.lint]
-description = "Run lint checks"
-allowlist_externals = ["bash"]
+base_python = "py312"
+description = "Check code against coding style standards"
+allowlist_externals = ["bash", "find"]
 skip_install = true
-recreate = true
-deps = ["ruff==0.15.20"]
+deps = [
+  "ruff==0.15.20",
+  "codespell",
+  "shellcheck-py==0.11.0.1",
+  "shfmt-py==4.2.0",
+]
+# Run every check even after one fails, so a single run reports all findings.
+ignore_errors = true
 commands = [
-    ["bash", "tests/lint/ascii-check.sh"],
-    ["ruff", "check", "{tox_root}/src", "{tox_root}/tests"],
-    ["ruff", "format", "--check", "{tox_root}/src", "{tox_root}/tests"],
+  [ "bash", "tests/lint/ascii-check.sh", "py" ],
+  [ "bash", "tests/lint/ascii-check.sh", "sh" ],
+  [ "ruff", "check", "src", "tests" ],
+  [ "ruff", "format", "--check", "src", "tests" ],
+  [ "codespell", "." ],
+  [
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shellcheck", "-f", "gcc", "{\\}", "+",
+  ],
+  [
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shfmt", "-d", "-s", "-i", "4", "-l", "{\\}", "+",
+  ],
 ]
 
 [tool.tox.env.fmt]
-description = "Run ruff's auto-formatter"
-allowlist_externals = ["sh"]
+description = "Automatically format code"
+allowlist_externals = ["find"]
 skip_install = true
-recreate = true
-deps = ["ruff==0.15.20"]
+deps = [
+  "ruff==0.15.20",
+  "codespell",
+  "shfmt-py==4.2.0",
+  "mdformat",
+  "mdformat-gfm",
+  "mdformat-pyproject",
+]
 commands = [
-    ["ruff", "check", "--fix", "{tox_root}/src", "{tox_root}/tests"],
-    ["ruff", "format", "{tox_root}/src", "{tox_root}/tests"],
+  [ "ruff", "check", "--fix", "src", "tests" ],
+  [ "ruff", "format", "src", "tests" ],
+  [ "codespell", "-w", "." ],
+  [
+    "find", ".", "-name", "*.sh",
+    "-not", "-path", "./.*",
+    "-exec", "shfmt", "-w", "-s", "-i", "4", "{\\}", "+",
+  ],
+  [
+    "find", ".", "-name", "*.md",
+    "-not", "-path", "./.*",
+    "-exec", "mdformat", "{\\}", "+",
+  ],
 ]
 
 [tool.tox.env.type]
 description = "Type-check with basedpyright"
-recreate = true
-deps = [
-  "basedpyright==1.39.9",
-  "pytest==9.1.1",
+deps = ["basedpyright==1.39.9", "pytest==9.1.1"]
+commands = [
+  [
+    "basedpyright",
+    "--pythonpath",
+    "{envpython}",
+    "{tox_root}/src",
+    "{tox_root}/tests",
+  ],
 ]
-commands = [["basedpyright", "{tox_root}/src", "{tox_root}/tests"]]
 
-[tool.tox.env.unit]
-description = "Run the unit test suite"
-deps = ["pytest"]
-commands = [["pytest", "-s", "tests/unit/"]]
+[tool.tox.env.hygiene]
+description = "Check for dead code"
+deps = ["vulture"]
+commands = [["vulture"]]
+
+[tool.tox.env.doc-checks]
+description = "Run doc checks"
+package = "skip"
+allowlist_externals = ["bash", "find"]
+deps = ["mdformat", "mdformat-gfm", "mdformat-pyproject", "pymarkdownlnt"]
+commands = [
+  [ "bash", "tests/lint/ascii-check.sh", "md" ],
+  [
+    "find", ".", "-name", "*.md",
+    "-not", "-path", "./.*",
+    "-exec", "mdformat", "--check", "{\\}", "+",
+  ],
+  [ "pymarkdown", "scan", "--recurse", "README.md", "docs", "tests" ],
+]
+
+[tool.tox.env.vale]
+description = "Check documentation against the Canonical style guide"
+package = "skip"
+allowlist_externals = ["bash"]
+deps = ["vale==3.22.0.0"]
+# Vale reads the downloaded upstream config (.vale/vale/.vale.ini) as its global
+# configuration, with the overrides that the script writes layered on top.
+set_env = { XDG_CONFIG_HOME = "{tox_root}/.vale" }
+commands = [
+  [ "bash", "tests/lint/get-vale-config.sh" ],
+  [
+    "vale", "--config=.vale/overrides.ini", "--glob=*.md",
+    "README.md", "docs", "tests",
+  ],
+]
+
+[tool.tox.env_base.unit]
+factors = [["py310", "py312", "py314"]]
+description = "Run unit tests"
+deps = ["coverage[toml]", "pytest"]
+commands = [
+  [
+    "coverage", "run", "--source=src/opensearch_client",
+    "-m", "pytest", "-s", "tests/unit/",
+  ],
+  [ "coverage", "report" ],
+]
 
 [tool.tox.env.functional]
 description = "Run functional tests against a live OpenSearch cluster (see tests/functional/)"
 deps = ["pytest"]
 pass_env = [
-    "OPENSEARCH_URL",
-    "OPENSEARCH_HOST",
-    "OPENSEARCH_PORT",
-    "OPENSEARCH_USER",
-    "OPENSEARCH_PASSWORD",
-    "OPENSEARCH_CA_CERT",
-    "OPENSEARCH_INSECURE",
-    "OPENSEARCH_INDEX",
+  "OPENSEARCH_URL",
+  "OPENSEARCH_HOST",
+  "OPENSEARCH_PORT",
+  "OPENSEARCH_USER",
+  "OPENSEARCH_PASSWORD",
+  "OPENSEARCH_CA_CERT",
+  "OPENSEARCH_INSECURE",
+  "OPENSEARCH_INDEX",
 ]
 commands = [["pytest", "-s", "tests/functional/"]]
+
+[tool.tox.env.actionlint]
+description = "Lint GitHub Actions workflows with actionlint"
+skip_install = true
+deps = ["actionlint-py"]
+commands = [["actionlint"]]
 
 
 #######################################
@@ -96,3 +198,63 @@ commands = [["pytest", "-s", "tests/functional/"]]
 
 [tool.pyright]
 typeCheckingMode = "standard"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "W",
+  "F",      # pycodestyle and pyflakes
+  "I",      # import sorting
+  "D",      # docstrings
+  "A",      # names that shadow builtins
+  "BLE",    # blind `except Exception`
+  "N",      # naming
+  "ARG",    # unused arguments
+  "ANN",    # type annotations
+  "PGH003", # blanket `type: ignore`
+  "PGH004", # blanket `noqa`
+  "RUF100", # unused `noqa`
+  "PL",     # pylint rules
+  "SLF",    # private member access
+]
+ignore = [
+  "PLR2004", # magic values
+  "ANN401",  # `Any`
+  "PLR0913", # too many arguments
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pep8-naming]
+# logging.Handler.handleError: the standard library's name, overridden in tests.
+extend-ignore-names = ["handleError"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests do not need docstrings or annotations, and they may call private members
+# and define fakes with unused arguments.
+"tests/**" = ["D", "ANN", "ARG", "SLF"]
+
+[tool.codespell]
+# codespell skips hidden directories by default
+skip = ["venv"]
+
+[tool.vulture]
+paths = ["src", "tests"]
+min_confidence = 60
+
+[tool.mdformat]
+wrap = 80
+
+[tool.pymarkdown.extensions.markdown-tables]
+enabled = true # parse tables, so MD013 can skip them
+
+[tool.pymarkdown.plugins.md013]
+tables = false      # no line limit in tables
+code_blocks = false # no line limit in code blocks
+
+[tool.pymarkdown.plugins.md060]
+enabled = false # clashes with mdformat's table padding

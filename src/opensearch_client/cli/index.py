@@ -25,7 +25,12 @@ NAME = "index"
 
 
 def add_subparser(subparsers: _SubParsersAction) -> None:
-    """Register ``index`` and its operation verbs."""
+    """Register ``index`` and its operation verbs.
+
+    Args:
+        subparsers (_SubParsersAction): the top-level subparsers action to register
+            under.
+    """
     parser = subparsers.add_parser(NAME, help="index-level operations")
     operations = parser.add_subparsers(dest="operation", required=True)
 
@@ -80,7 +85,8 @@ def add_subparser(subparsers: _SubParsersAction) -> None:
     set_mapping.add_argument(
         "source",
         metavar="SOURCE",
-        help="the mappings body as JSON ('@PATH' for a file, '-' for stdin, or literal)",
+        help="the mappings body as JSON ('@PATH' for a file, '-' for stdin, or "
+        "literal)",
     )
     set_mapping.add_argument("--index", required=True, help="the index to update")
     add_format_argument(set_mapping)
@@ -188,7 +194,7 @@ def _load_documents(text: str, input_format: str) -> list[dict[str, Any]]:
         else:
             documents = yaml.safe_load(text)
     except (json.JSONDecodeError, yaml.YAMLError) as error:
-        logging.error(f"could not parse {input_format} documents: {error}")
+        logging.error("could not parse %s documents: %s", input_format, error)
         sys.exit(2)
 
     if documents is None:
@@ -198,7 +204,9 @@ def _load_documents(text: str, input_format: str) -> list[dict[str, Any]]:
     if not isinstance(documents, list) or not all(
         isinstance(document, dict) for document in documents
     ):
-        logging.error(f"{input_format} input must be a list of objects (or one object)")
+        logging.error(
+            "%s input must be a list of objects (or one object)", input_format
+        )
         sys.exit(2)
     return documents
 
@@ -207,8 +215,9 @@ def _delete_one(args: Namespace, client: OpensearchClient) -> None:
     """Delete one concrete index; a wildcard here is a mistake (use --pattern)."""
     if "*" in args.index:
         logging.error(
-            f"--index {args.index!r} looks like a pattern; use --pattern to delete "
-            "several indices at once."
+            "--index %r looks like a pattern; use --pattern to delete "
+            "several indices at once.",
+            args.index,
         )
         sys.exit(2)
     if not args.apply:
@@ -232,7 +241,7 @@ def _delete_pattern(args: Namespace, client: OpensearchClient) -> None:
     """
     listed = client.list_indices(args.pattern)
     if not listed:
-        logging.error(f"could not list indices for {args.pattern!r}: {listed.reason}")
+        logging.error("could not list indices for %r: %s", args.pattern, listed.reason)
         sys.exit(1)
     names = listed.data
     if not args.apply:
@@ -268,8 +277,15 @@ def _run_delete(args: Namespace, client: OpensearchClient) -> None:
         _delete_pattern(args, client)
 
 
-def run(args: Namespace, client: OpensearchClient) -> None:
-    """Run the chosen operation against the client."""
+def run(  # noqa: PLR0912  # dispatcher: one branch per operation
+    args: Namespace, client: OpensearchClient
+) -> None:
+    """Run the chosen operation against the client.
+
+    Args:
+        args (Namespace): the parsed command-line arguments.
+        client (OpensearchClient): the client to run the operation with.
+    """
     if args.operation == "mapping":
         if args.field:
             result = client.field_mapping(args.field, index=args.index)

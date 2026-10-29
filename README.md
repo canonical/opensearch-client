@@ -1,18 +1,18 @@
 # opensearch_client
 
-OpenSearch client library
+OpenSearch client library, logging utilities, and CLI.
 
 ## Install
 
 Install the package as you would any non-PyPi Python package. For example:
 
-```
+```sh
 python3 -m pip install -e .
 ```
 
 or
 
-```
+```sh
 pipx install git+https://github.com/canonical/opensearch_client.git
 ```
 
@@ -22,18 +22,12 @@ Runtime dependencies: `requests`, `PyYAML`.
 
 `opensearch_client` provides:
 
-- a Python library for querying an OpenSearch cluster (directly, or through a
-  dashboard console proxy as a fallback), where every call returns an
-  `OpensearchResult` (`ok` / `data` / `reason`) rather than raising; and
-- an `os-cli` command-line tool
+- a Python library for interacting with an OpenSearch cluster (directly, or
+  through a dashboard console proxy as a fallback);
+- `OpensearchLogHandler`, a `logging` handler that indexes records; and
+- the `os-cli` command-line tool
 
-## Documentation
-
-- [Library](docs/library.md): the client API and connection helpers.
-- [CLI](docs/cli.md): the CLI subcommands, including `query`, `search`, `index`,
-  `cluster`, and `triage`.
-- [SQL `_explain`](docs/sql-explain.md): the `_explain` output the triage
-  predicate translation parses.
+See [docs/](docs/) for additional information.
 
 ## Roadmap
 
