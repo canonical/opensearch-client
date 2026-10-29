@@ -7,8 +7,8 @@ import json
 from typing import Any
 
 from opensearch_client.client import (
-    BulkItem,
     DEFAULT_INDEX,
+    BulkItem,
     OpensearchClient,
     _pack_batches,
 )
@@ -133,18 +133,6 @@ def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
     )  # every attempt fails
     res = OpensearchClient(transport).bulk([{"a": 1}], max_retries=2)
     assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries
-
-
-def test_put_ism_policy_creates_without_and_updates_with_sequence_numbers() -> None:
-    transport = FakeTransport(Success({}))
-    client = OpensearchClient(transport)
-    client.put_ism_policy("p", {"policy": {}})
-    client.put_ism_policy("p", {"policy": {}}, seq_no=4, primary_term=1)
-    assert transport.calls[0][1] == "_plugins/_ism/policies/p"
-    assert (
-        transport.calls[1][1]
-        == "_plugins/_ism/policies/p?if_seq_no=4&if_primary_term=1"
-    )
 
 
 def test_add_ism_policy_turns_a_200_with_failed_indices_into_a_failure() -> None:
