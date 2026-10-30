@@ -36,15 +36,19 @@ class FakeTransport:
 class _SeqTransport:
     """A transport returning queued results in order (the last repeats).
 
-    Counts the calls.
+    Counts the calls and records each one's path.
     """
 
     def __init__(self, *results: OpensearchResult[Any]) -> None:
         self._results = results
         self.calls = 0
+        self.paths: list[str] = []
 
-    def request(self, *_: Any, **__: Any) -> OpensearchResult[Any]:
+    def request(
+        self, method: str, path: str, *_: Any, **__: Any
+    ) -> OpensearchResult[Any]:
         self.calls += 1
+        self.paths.append(path)
         return self._results[min(self.calls - 1, len(self._results) - 1)]
 
 
@@ -143,3 +147,66 @@ def test_bulk_retries_failed_docs_then_fails_with_the_summary() -> None:
     )  # every attempt fails
     res = OpensearchClient(transport).bulk([{"a": 1}], "*", max_retries=2)
     assert not res and res.data["failed"] == 1 and transport.calls == 3  # 1 + 2 retries
+
+
+POLICY_ID_KEY = "index.plugins.index_state_management.policy_id"
+# a and c show no policy, b is managed by "old".
+STATUS = Success(
+    {
+        "a": {POLICY_ID_KEY: None},
+        "b": {POLICY_ID_KEY: "old"},
+        "c": {POLICY_ID_KEY: None},
+        "total_managed_indices": 1,
+    }
+)
+# c was attached too recently for the status to show it, so the add API refuses it.
+ADD_REFUSES_C = Success(
+    {
+        "updated_indices": 1,
+        "failures": True,
+        "failed_indices": [
+            {"index_name": "c", "reason": "This index already has a policy"}
+        ],
+    }
+)
+ALL_DONE = Success({"updated_indices": 2, "failures": False, "failed_indices": []})
+
+
+def test_attach_ism_policy_adds_unmanaged_indices_and_moves_the_rest() -> None:
+    transport = _SeqTransport(STATUS, ADD_REFUSES_C, ALL_DONE)
+    res = OpensearchClient(transport).attach_ism_policy("x-*", "p")
+    assert res
+    assert transport.paths == [
+        "_plugins/_ism/explain/x-*",
+        "_plugins/_ism/add/a,c",
+        "_plugins/_ism/change_policy/b,c",
+    ]
+
+
+def test_attach_ism_policy_without_force_reports_indices_with_a_policy() -> None:
+    transport = _SeqTransport(STATUS, ADD_REFUSES_C)
+    res = OpensearchClient(transport).attach_ism_policy("x-*", "p", force=False)
+    assert not res
+    assert res.reason == (
+        "b: already has a policy old; c: This index already has a policy"
+    )
+    assert transport.paths == ["_plugins/_ism/explain/x-*", "_plugins/_ism/add/a,c"]
+
+
+def test_attach_ism_policy_reports_an_index_the_move_refused() -> None:
+    also_refused = Success(
+        {
+            "updated_indices": 1,
+            "failures": True,
+            "failed_indices": [
+                {
+                    "index_name": "c",
+                    "reason": "This index already has a policy; then index is closed",
+                }
+            ],
+        }
+    )
+    transport = _SeqTransport(STATUS, ADD_REFUSES_C, also_refused)
+    res = OpensearchClient(transport).attach_ism_policy("x-*", "p")
+    assert not res
+    assert res.reason == "c: This index already has a policy; then index is closed"

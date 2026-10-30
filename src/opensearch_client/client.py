@@ -576,6 +576,160 @@ class OpensearchClient:
         """Delete a component template."""
         return self.request("DELETE", f"_component_template/{name}")
 
+    def get_ism_policy(
+        self, policy_id: str | None = None
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Get all ISM policies, or one by ID.
+
+        One policy comes with the ``_seq_no`` and ``_primary_term`` that
+        :meth:`set_ism_policy` needs to update it.
+        """
+        path = "_plugins/_ism/policies"
+        if policy_id is not None:
+            path = f"{path}/{policy_id}"
+        return self.request("GET", path)
+
+    def set_ism_policy(
+        self,
+        policy_id: str,
+        body: dict[str, Any],
+        *,
+        seq_no: int | None = None,
+        primary_term: int | None = None,
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Create an ISM policy, or update one read by :meth:`get_ism_policy`.
+
+        An update must pass the ``_seq_no`` and ``_primary_term`` the policy was
+        read with: OpenSearch refuses an update without them (409), and refuses
+        them if the policy changed since the read.
+
+        Args:
+            policy_id: the policy ID.
+            body: the policy definition, ``{"policy": {...}}``.
+            seq_no: the read policy's ``_seq_no``; None to create.
+            primary_term: the read policy's ``_primary_term``; None to create.
+        """
+        path = f"_plugins/_ism/policies/{policy_id}"
+        if seq_no is not None and primary_term is not None:
+            path += _query_string(
+                {"if_seq_no": seq_no, "if_primary_term": primary_term}
+            )
+        return self.request("PUT", path, body)
+
+    def attach_ism_policy(
+        self, index: str, policy_id: str, *, force: bool = True
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Make ISM manage the indices matching ``index`` with a stored policy.
+
+        Wildcards are allowed in ``index``. The policy must already be stored
+        (see :meth:`set_ism_policy`).
+
+        An index with no policy gets this one, and ISM starts running it on its
+        next check of the index. An index that already has a policy, this one or
+        another, is moved to this policy's current version when ``force`` is True
+        (the default). That move is not immediate: ISM queues it, and the index
+        switches once it finishes the actions of the state it is in. With
+        ``force=False`` such an index keeps its policy and is reported as failed.
+
+        It works in three steps:
+
+        1. Sort the matching indices into those that already have a policy and
+        those that have none.
+        2. The add API attaches the policy to the indices that have none.
+        3. With ``force``, the change policy API moves the indices that already
+           have a policy, together with any index the add API refused.
+
+        OpenSearch reports refused indices inside a 200 response, so this returns
+        a Failure listing each refused index and its reason whenever any index
+        did not get the policy. Either way, ``data`` holds the response of each
+        API that was called, under ``"add"`` and ``"change_policy"``.
+
+        Args:
+            index: the index or pattern whose indices get the policy.
+            policy_id: the ID of the stored policy.
+            force: move indices that already have a policy to this one.
+        """
+        status = self.request("GET", f"_plugins/_ism/explain/{index}")
+        if not status:
+            return Failure(f"explaining {index}: {status.reason}", status=status.status)
+        unmanaged: list[str] = []
+        pending: dict[str, str] = {}
+
+        for name, entry in status.data.items():
+            if not isinstance(entry, dict):
+                continue
+            current_policy = entry.get("index.plugins.index_state_management.policy_id")
+            if current_policy:
+                pending[name] = f"already has a policy {current_policy}"
+            else:
+                unmanaged.append(name)
+
+        data: dict[str, Any] = {}
+        body = {"policy_id": policy_id}
+        if unmanaged:
+            added = self.request(
+                "POST", f"_plugins/_ism/add/{','.join(unmanaged)}", body
+            )
+            data["add"] = added.data
+            if not added:
+                return Failure(
+                    f"adding {policy_id}: {added.reason}",
+                    data=data,
+                    status=added.status,
+                )
+            for failed in added.data.get("failed_indices", []):
+                pending[failed["index_name"]] = failed["reason"]
+
+        if force and pending:
+            names = ",".join(pending)
+            changed = self.request("POST", f"_plugins/_ism/change_policy/{names}", body)
+            data["change_policy"] = changed.data
+            if not changed:
+                return Failure(
+                    f"moving {names} to {policy_id}: {changed.reason}",
+                    data=data,
+                    status=changed.status,
+                )
+            pending = {}
+            for failed in changed.data.get("failed_indices", []):
+                pending[failed["index_name"]] = failed["reason"]
+
+        if pending:
+            return Failure(
+                "; ".join(f"{n}: {r}" for n, r in pending.items()), data=data
+            )
+        return Success(data)
+
+    def get_index_settings(
+        self, index: str, *, flat_settings: bool = False
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Get the settings of the indices matching ``index``.
+
+        Args:
+            index: the index or pattern to read; required, never defaulted.
+            flat_settings: ask for dotted keys (``index.number_of_shards``)
+                rather than nested objects, which is easier to look one
+                setting up in.
+
+        Returns:
+            Each matching index name mapped to its ``{"settings": {...}}``.
+        """
+        path = f"{index}/_settings"
+        if flat_settings:
+            path += _query_string({"flat_settings": True})
+        return self.request("GET", path)
+
+    def update_index_settings(
+        self, index: str, settings: dict[str, Any]
+    ) -> OpensearchResult[dict[str, Any]]:
+        """Update dynamic settings of an existing index (``PUT <index>/_settings``).
+
+        Args:
+            index: the index or pattern to update; required, never defaulted.
+            settings: the settings, e.g. ``{"index.refresh_interval": "30s"}``.
+        """
+        return self.request("PUT", f"{index}/_settings", settings)
+
     def refresh(self, index: str) -> OpensearchResult[dict[str, Any]]:
         """Refresh an index so its recent writes become searchable.
 

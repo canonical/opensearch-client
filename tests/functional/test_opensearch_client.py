@@ -12,8 +12,9 @@ the variables, runs these tests, and tears everything down.
 
 import contextlib
 import os
+import time
 import uuid
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -322,3 +323,66 @@ def test_rollover_dry_run_then_apply_moves_the_write_index_with_new_settings() -
         assert sorted(holders.data) == [first, second]
         assert holders.data[first]["aliases"][alias]["is_write_index"] is False
         assert holders.data[second]["aliases"][alias]["is_write_index"] is True
+
+
+def test_ism_policy_is_created_updated_attached_and_changed() -> None:
+    prefix = _unique("opensearch_client-func-ism")
+    policy_id, index = f"{prefix}-policy", f"{prefix}-000001"
+    policy = {
+        "policy": {
+            "description": "first",
+            "default_state": "hot",
+            "states": [{"name": "hot", "actions": [], "transitions": []}],
+        }
+    }
+    with _temporary_indices(index):
+        try:
+            assert _client.get_ism_policy(policy_id).status == 404
+            assert _client.set_ism_policy(policy_id, policy)
+
+            # An update must carry the sequence numbers it was read with.
+            policy["policy"]["description"] = "second"
+            assert _client.set_ism_policy(policy_id, policy).status == 409
+            read = _client.get_ism_policy(policy_id)
+            assert read
+            assert _client.set_ism_policy(
+                policy_id,
+                policy,
+                seq_no=read.data["_seq_no"],
+                primary_term=read.data["_primary_term"],
+            )
+
+            assert _client.create_index({}, index=index)
+            assert _client.update_index_settings(
+                index, {"index.plugins.index_state_management.rollover_alias": prefix}
+            )
+            # The dotted spelling is OpenSearch's, and callers read this key back
+            # to decide whether the alias still needs setting.
+            flat = _client.get_index_settings(index, flat_settings=True)
+            assert flat
+            alias_key = "index.plugins.index_state_management.rollover_alias"
+            assert flat.data[index]["settings"][alias_key] == prefix
+            assert _client.attach_ism_policy(index, policy_id)
+            # ISM records the attachment asynchronously; the status shows it shortly.
+            managed_by = None
+            for _ in range(30):
+                status = _client.get(f"_plugins/_ism/explain/{index}")
+                assert status
+                key = "index.plugins.index_state_management.policy_id"
+                managed_by = status.data[index][key]
+                if managed_by == policy_id:
+                    break
+                time.sleep(1)
+            assert managed_by == policy_id
+
+            # The status now shows the policy: without force the index is refused;
+            # with force it is moved to the policy (again) instead.
+            refused = _client.attach_ism_policy(index, policy_id, force=False)
+            assert not refused
+            assert f"already has a policy {policy_id}" in refused.reason
+            moved = _client.attach_ism_policy(index, policy_id)
+            assert moved, moved.reason
+            assert "change_policy" in moved.data
+        finally:
+            _client.request("POST", f"_plugins/_ism/remove/{index}")
+            _client.request("DELETE", f"_plugins/_ism/policies/{policy_id}")
