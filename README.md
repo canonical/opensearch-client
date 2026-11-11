@@ -64,6 +64,28 @@ Set up a local environment with the package and all development tools:
 uv sync
 ```
 
+By default, `uv sync` installs the `dev` group, which includes every other group
+in `pyproject.toml`.
+
+To install a single dependency group instead, for example only the lint tools:
+
+```sh
+uv sync --only-group lint
+```
+
+To install the package with one group, for example to run the unit tests:
+
+```sh
+uv sync --no-default-groups --group unit
+```
+
+Without `--no-default-groups`, uv also installs the `dev` group.
+
+`uv sync` creates the virtual environment in `.venv`. Activate it with
+`source .venv/bin/activate`, or `source .venv/bin/activate.fish` in fish. Run
+`deactivate` to leave it. You can also run a command in it without activating,
+for example `uv run pytest`.
+
 Run the checks the same way CI does:
 
 ```sh
