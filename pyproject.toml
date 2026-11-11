@@ -16,8 +16,32 @@ description = "OpenSearch client library."
 requires-python = ">=3.10"
 dependencies = ["requests", "PyYAML"]
 
-[project.optional-dependencies]
-dev = ["pytest"]
+[dependency-groups]
+lint = ["ruff==0.15.20", "codespell", "shellcheck-py==0.11.0.1", "shfmt-py==4.2.0"]
+fmt = [
+  "ruff==0.15.20",
+  "codespell",
+  "shfmt-py==4.2.0",
+  "mdformat",
+  "mdformat-gfm",
+  "mdformat-pyproject",
+]
+type = ["basedpyright==1.39.9", "pytest==9.1.1"]
+hygiene = ["vulture"]
+doc-checks = ["mdformat", "mdformat-gfm", "mdformat-pyproject", "pymarkdownlnt"]
+vale = ["vale==3.22.0.0"]
+actionlint = ["actionlint-py"]
+unit = ["coverage[toml]", "pytest"]
+dev = [
+  { include-group = "lint" },
+  { include-group = "fmt" },
+  { include-group = "type" },
+  { include-group = "hygiene" },
+  { include-group = "doc-checks" },
+  { include-group = "vale" },
+  { include-group = "actionlint" },
+  { include-group = "unit" },
+]
 
 [project.scripts]
 os-cli = "opensearch_client.cli.main:main"
@@ -25,13 +49,20 @@ os-cli = "opensearch_client.cli.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/opensearch_client"]
 
+[tool.uv]
+required-version = ">=0.13.4"
+# Ignore releases newer than 7 days; see README for urgent fixes.
+exclude-newer = "7 days"
+
 
 #######################################
 # TOX/TEST CONFIGS                    #
 #######################################
 
 [tool.tox]
-requires = ["tox>=4.57", "tox-uv>=1.0.0"]
+requires = ["tox>=4.57", "tox-uv>=1.37"]
+# Do not write a .venv redirect file pointing at a tox env.
+venv_redirect = false
 env_list = [
   "lint",
   "type",
@@ -46,6 +77,8 @@ env_list = [
 ]
 
 [tool.tox.env_run_base]
+# Install from uv.lock.
+runner = "uv-venv-lock-runner"
 package = "wheel"
 recreate = true
 set_env = { PYTHONPATH = "{tox_root}/src" }
@@ -54,13 +87,8 @@ set_env = { PYTHONPATH = "{tox_root}/src" }
 base_python = "py312"
 description = "Check code against coding style standards"
 allowlist_externals = ["bash", "find"]
-skip_install = true
-deps = [
-  "ruff==0.15.20",
-  "codespell",
-  "shellcheck-py==0.11.0.1",
-  "shfmt-py==4.2.0",
-]
+package = "skip"
+only_groups = ["lint"]
 # Run every check even after one fails, so a single run reports all findings.
 ignore_errors = true
 commands = [
@@ -84,15 +112,8 @@ commands = [
 [tool.tox.env.fmt]
 description = "Automatically format code"
 allowlist_externals = ["find"]
-skip_install = true
-deps = [
-  "ruff==0.15.20",
-  "codespell",
-  "shfmt-py==4.2.0",
-  "mdformat",
-  "mdformat-gfm",
-  "mdformat-pyproject",
-]
+package = "skip"
+only_groups = ["fmt"]
 commands = [
   [ "ruff", "check", "--fix", "src", "tests" ],
   [ "ruff", "format", "src", "tests" ],
@@ -111,7 +132,7 @@ commands = [
 
 [tool.tox.env.type]
 description = "Type-check with basedpyright"
-deps = ["basedpyright==1.39.9", "pytest==9.1.1"]
+dependency_groups = ["type"]
 commands = [
   [
     "basedpyright",
@@ -124,14 +145,14 @@ commands = [
 
 [tool.tox.env.hygiene]
 description = "Check for dead code"
-deps = ["vulture"]
+dependency_groups = ["hygiene"]
 commands = [["vulture"]]
 
 [tool.tox.env.doc-checks]
 description = "Run doc checks"
 package = "skip"
 allowlist_externals = ["bash", "find"]
-deps = ["mdformat", "mdformat-gfm", "mdformat-pyproject", "pymarkdownlnt"]
+only_groups = ["doc-checks"]
 commands = [
   [ "bash", "tests/lint/ascii-check.sh", "md" ],
   [
@@ -146,7 +167,7 @@ commands = [
 description = "Check documentation against the Canonical style guide"
 package = "skip"
 allowlist_externals = ["bash"]
-deps = ["vale==3.22.0.0"]
+only_groups = ["vale"]
 # Vale reads the downloaded upstream config (.vale/vale/.vale.ini) as its global
 # configuration, with the overrides that the script writes layered on top.
 set_env = { XDG_CONFIG_HOME = "{tox_root}/.vale" }
@@ -161,7 +182,7 @@ commands = [
 [tool.tox.env_base.unit]
 factors = [["py310", "py312", "py314"]]
 description = "Run unit tests"
-deps = ["coverage[toml]", "pytest"]
+dependency_groups = ["unit"]
 commands = [
   [
     "coverage", "run", "--source=src/opensearch_client",
@@ -172,7 +193,7 @@ commands = [
 
 [tool.tox.env.functional]
 description = "Run functional tests against a live OpenSearch cluster (see tests/functional/)"
-deps = ["pytest"]
+dependency_groups = ["unit"]
 pass_env = [
   "OPENSEARCH_URL",
   "OPENSEARCH_HOST",
@@ -187,8 +208,8 @@ commands = [["pytest", "-s", "tests/functional/"]]
 
 [tool.tox.env.actionlint]
 description = "Lint GitHub Actions workflows with actionlint"
-skip_install = true
-deps = ["actionlint-py"]
+package = "skip"
+only_groups = ["actionlint"]
 commands = [["actionlint"]]
 
 
